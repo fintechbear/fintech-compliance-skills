@@ -20,6 +20,33 @@ Load the skills relevant to your task. **Always load `refusal/refusal-policy.md`
 - [`regional/uk-fca-gdpr.md`](regional/uk-fca-gdpr.md) — UK
 - [`regional/turkey-kvkk-bddk-masak.md`](regional/turkey-kvkk-bddk-masak.md) — Turkey
 
+## Languages (load the one you code in)
+
+Each file covers logging, workflow, hashing/encryption and country differences for that language.
+
+- [`languages/java.md`](languages/java.md) — Java (core banking, Spring Boot)
+- [`languages/kotlin.md`](languages/kotlin.md) — Kotlin (mobile banking backends + Android)
+- [`languages/python.md`](languages/python.md) — Python (fintech, risk, data)
+- [`languages/csharp-dotnet.md`](languages/csharp-dotnet.md) — C# / .NET (enterprise finance)
+- [`languages/go.md`](languages/go.md) — Go (payment infrastructure, high throughput)
+- [`languages/javascript-typescript.md`](languages/javascript-typescript.md) — JavaScript / TypeScript (web + Node services)
+- [`languages/rust.md`](languages/rust.md) — Rust (high-assurance services)
+- [`languages/scala.md`](languages/scala.md) — Scala (big data / risk)
+- [`languages/cobol.md`](languages/cobol.md) — COBOL (z/OS mainframe bank core)
+- [`languages/plsql.md`](languages/plsql.md) — PL/SQL (Oracle stored procedures)
+
+## Databases (load the one you store in)
+
+Each file covers storage-side controls: encryption at rest, column encryption, auditing, access control, masking and retention.
+
+- [`databases/postgresql.md`](databases/postgresql.md) — PostgreSQL
+- [`databases/oracle.md`](databases/oracle.md) — Oracle Database
+- [`databases/sql-server.md`](databases/sql-server.md) — Microsoft SQL Server
+- [`databases/mysql-mariadb.md`](databases/mysql-mariadb.md) — MySQL / MariaDB
+- [`databases/mongodb.md`](databases/mongodb.md) — MongoDB
+- [`databases/redis.md`](databases/redis.md) — Redis
+- [`databases/db2.md`](databases/db2.md) — IBM Db2 (mainframe / LUW)
+
 ## Which to load
 
 | Task touches… | Load |
@@ -31,3 +58,5 @@ Load the skills relevant to your task. **Always load `refusal/refusal-policy.md`
 | UK users | `uk-fca-gdpr` |
 | Turkey users | `turkey-kvkk-bddk-masak` |
 | Any audited system | `iso27001-soc2` |
+| A specific language | the matching `languages/<lang>.md` |
+| A specific database | the matching `databases/<db>.md` |
