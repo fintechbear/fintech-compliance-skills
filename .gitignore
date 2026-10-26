@@ -11,3 +11,8 @@ Thumbs.db
 .env
 *.pem
 *.key
+
+# Node
+node_modules/
+npm-debug.log*
+*.tgz

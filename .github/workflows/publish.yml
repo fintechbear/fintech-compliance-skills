@@ -44,6 +44,14 @@ jobs:
             exit 1
           fi
 
+      - name: Install dev dependencies
+        run: npm ci || npm install
+
+      - name: Quality gate (must pass before publish)
+        run: |
+          npm run verify
+          npm test
+
       - name: Publish
         run: npm publish --access public --provenance
         env:
