@@ -1,0 +1,51 @@
+name: Publish to npm
+
+# Publishes the package when you push a version tag (e.g. v1.0.0),
+# or when you run this workflow by hand from the Actions tab.
+#
+# Two ways to authenticate — the workflow supports BOTH:
+#   1. Trusted Publishing (OIDC) — no secrets at all. Requires the package to
+#      already exist on npm once, and a Trusted Publisher configured on npmjs.com
+#      pointing at this repo + this workflow file.
+#   2. Automation token — set a repo secret named NPM_TOKEN. Works for the very
+#      first publish too.
+# If NPM_TOKEN is set it is used; otherwise the job relies on OIDC.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write   # required for OIDC trusted publishing + provenance
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'          # ships npm >= 11.5.1 (OIDC-capable)
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Verify package version matches the tag
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          PKG_VERSION="v$(node -p "require('./package.json').version")"
+          TAG="${GITHUB_REF_NAME}"
+          echo "package.json: $PKG_VERSION   tag: $TAG"
+          if [ "$PKG_VERSION" != "$TAG" ]; then
+            echo "::error::package.json version ($PKG_VERSION) does not match the tag ($TAG). Bump package.json and re-tag."
+            exit 1
+          fi
+
+      - name: Publish
+        run: npm publish --access public --provenance
+        env:
+          # Present only if you added the NPM_TOKEN secret; empty string => OIDC path.
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
