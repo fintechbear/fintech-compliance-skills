@@ -5,6 +5,10 @@
   "bin": {
     "fintech-compliance-skills": "installer/index.js"
   },
+  "scripts": {
+    "verify": "node installer/verify.js",
+    "test": "node installer/verify.js"
+  },
   "files": [
     "installer/",
     "skills/",

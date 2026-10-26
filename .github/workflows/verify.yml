@@ -1,0 +1,27 @@
+name: Verify
+
+# Quality gate: runs on every push and PR. Proves the installer still produces
+# resolvable, parseable, idempotent output before anything is merged or released.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch: {}
+
+jobs:
+  verify:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Installer structural checks
+        run: node installer/verify.js
+      - name: Package contents sanity
+        run: npm pack --dry-run

@@ -83,7 +83,14 @@ npx github:fintechbear/fintech-compliance-skills --tool codex --target .
 |------|-------------------|--------|
 | **Claude Code** | `<project>/.claude/skills/<name>/SKILL.md` | one folder per skill, with YAML frontmatter |
 | **Kiro** | `~/.kiro/crew/skills/<name>/SKILL.md` | one folder per skill, with YAML frontmatter |
-| **Codex CLI** | `<project>/AGENTS.md` | one instruction file that points at the rule files |
+| **Codex CLI** | `<project>/AGENTS.md` + `<project>/.fintech-compliance-skills/skills/` | a managed instruction block plus the rule files it points at |
+
+The installer is safe to re-run: it writes a single managed block in `AGENTS.md`
+(replaced in place, never duplicated), rewrites each skill's cross-links so they
+resolve where they land, and **will not overwrite a `SKILL.md` you have edited**
+unless you pass `--force`.
+
+Flags: `--tool claude|kiro|codex`, `--target <dir>`, `--force`, `--help`.
 
 After installing: **Claude Code** — restart or `/reload`; **Kiro** — loads on the
 next session; **Codex** — reads `AGENTS.md` automatically at session start.
