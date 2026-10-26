@@ -12,6 +12,37 @@ instructed to **stop and refuse**, not to produce the unsafe code.
 > widely accepted security and compliance practices. Always confirm obligations
 > with a qualified compliance/legal professional for your jurisdiction.
 
+## Quick install (one command)
+
+New to this? You don't need to copy files by hand. Run one command and pick your tool:
+
+```bash
+npx fintech-compliance-skills
+```
+
+It asks which agent you use and installs the skills in the right place and format:
+
+| Tool | Where it installs | Format |
+|------|-------------------|--------|
+| **Claude Code** | `<project>/.claude/skills/<name>/SKILL.md` | one folder per skill, with frontmatter |
+| **Kiro** | `~/.kiro/crew/skills/<name>/SKILL.md` | one folder per skill, with frontmatter |
+| **Codex CLI** | `<project>/AGENTS.md` | single instruction file that points at the rules |
+
+Non-interactive (CI or scripts):
+
+```bash
+# Claude Code, into the current project
+npx fintech-compliance-skills --tool claude --target .
+
+# Kiro (always installs to ~/.kiro/crew/skills)
+npx fintech-compliance-skills --tool kiro
+
+# Codex CLI, into the current project
+npx fintech-compliance-skills --tool codex --target .
+```
+
+After installing: Claude Code — restart or `/reload`; Kiro — loads on the next session; Codex — reads `AGENTS.md` automatically at session start.
+
 ## How it works
 
 1. The agent loads the relevant skill(s) for the task (e.g. storing card data → PCI-DSS).
@@ -25,6 +56,8 @@ instructed to **stop and refuse**, not to produce the unsafe code.
 | `skills/core/` | Rules that apply to all financial code |
 | `skills/global/` | International frameworks (PCI-DSS, ISO 27001, SOC 2) |
 | `skills/regional/` | Jurisdiction-specific rules (EU, US, Turkey, UK) |
+| `skills/languages/` | Per-language rules (Java, Kotlin, Python, C#, Go, JS/TS, Rust, Scala, COBOL, PL/SQL) |
+| `skills/databases/` | Per-database rules (PostgreSQL, Oracle, SQL Server, MySQL/MariaDB, MongoDB, Redis, Db2) |
 | `skills/refusal/` | When and how the agent must say no |
 | `examples/` | Good vs. bad code examples |
 
