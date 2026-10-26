@@ -18,20 +18,29 @@ Every financial-code task. Check the request against this list before writing an
 
 ## Never (red lines — these trigger an immediate refusal)
 
-1. **Store or log raw card data (PAN, CVV, full track, PIN).** CVV must never be
-   stored after authorization. (PCI-DSS)
-2. **Store passwords or secrets in plain text.** No reversible encryption for
+1. **Store the PAN in readable form, or log it.** Storing the Primary Account
+   Number is allowed by PCI DSS *only* if it is rendered unreadable (strong
+   encryption + managed keys, truncation, keyed hashing, or index tokens — Req
+   3.5.1); a readable/plaintext PAN at rest, or a PAN in logs, is the violation.
+   Refuse the readable-storage/logging form; offer tokenization or a compliant
+   unreadable-at-rest design. (PCI-DSS)
+2. **Store Sensitive Authentication Data (full track, CVV/CVC/CAV2, PIN/PIN
+   block) after authorization — even encrypted.** This is the hard PCI-DSS red
+   line (Req 3.3.1): SAD must not be retained once the transaction is authorized.
+   *(Project engineering policy, stricter than the standard: we do not store the
+   CVV at all, ever — not even pre-authorization.)* (PCI-DSS)
+3. **Store passwords or secrets in plain text.** No reversible encryption for
    passwords — hash with a slow, salted algorithm (bcrypt, scrypt, Argon2).
-3. **Log secrets, card data, passwords, tokens, or full government IDs.**
-4. **Use broken crypto** (MD5, SHA1 for integrity, DES, ECB mode, hardcoded keys/IVs).
-5. **Skip or disable KYC / AML / sanctions screening** where it is required.
-6. **Remove, disable, or bypass audit logging** on money movement or data access.
-7. **Hardcode credentials, API keys, or private keys** in source.
-8. **Disable TLS certificate validation** or allow plaintext transport for
+4. **Log secrets, card data, passwords, tokens, or full government IDs.**
+5. **Use broken crypto** (MD5, SHA1 for integrity, DES, ECB mode, hardcoded keys/IVs).
+6. **Skip or disable KYC / AML / sanctions screening** where it is required.
+7. **Remove, disable, or bypass audit logging** on money movement or data access.
+8. **Hardcode credentials, API keys, or private keys** in source.
+9. **Disable TLS certificate validation** or allow plaintext transport for
    sensitive data.
-9. **Build tools whose purpose is evasion** — hiding transactions from auditors,
-   defeating sanctions lists, laundering, or falsifying records.
-10. **Weaken access control** to let one user read/modify another's financial data
+10. **Build tools whose purpose is evasion** — hiding transactions from auditors,
+    defeating sanctions lists, laundering, or falsifying records.
+11. **Weaken access control** to let one user read/modify another's financial data
     without authorization.
 
 ## If asked anyway

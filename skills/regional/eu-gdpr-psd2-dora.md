@@ -34,9 +34,42 @@ def store_profile(user, fields, consent):
     data = {k: fields[k] for k in NEEDED_FIELDS}   # minimize
     repo.save(user.id, data, consent_ref=consent.id)
 
-def erase(user_id):                                 # GDPR right to erasure
-    repo.hard_delete(user_id); audit.record("erasure", user=user_id)
+def erase(user_id):
+    # GDPR right to erasure is NOT absolute. Before deleting anything, evaluate
+    # per data category whether erasure actually applies (GDPR Art. 17(1)) or is
+    # overridden by an exemption (Art. 17(3)) — e.g. a legal retention duty.
+    for cat in data_categories(user_id):
+        if legal_hold_active(user_id, cat):
+            # Litigation / regulatory hold freezes deletion for that category.
+            continue
+        obligation = retention_obligation(cat)      # e.g. AML/KYC & transaction
+                                                     # records: ~5–10y (EU AMLD,
+                                                     # MASAK/BDDK, US BSA)
+        if obligation and not obligation.expired(user_id):
+            # MUST retain: financial / AML record-keeping overrides erasure.
+            # Keep it in the retained, access-restricted store — do NOT delete.
+            continue
+        if not erasure_applies(cat, user_id):        # Art. 17(1) grounds absent?
+            continue                                 # no right to erase this cat
+        # Deletable now: profile / marketing / behavioural PII whose purpose ended.
+        repo.hard_delete(user_id, category=cat)
+        audit.record("erasure", user=user_id, category=cat)
+
+    # Caveats to document, not assume away:
+    #  - Audit, encrypted backups, replicas and prior data exports may lag or
+    #    retain copies; erasure is a process across all of them, not one DELETE.
+    #  - Backups: erase on restore or let them age out under a documented cycle.
+    #  - Crypto-shredding (destroying the per-record key) is operationally useful
+    #    but is NOT in all cases legally sufficient erasure — assess per regime.
 ```
+
+The right to erasure ("right to be forgotten") applies only *when the data is no
+longer needed or processing is unlawful* and is subject to the Art. 17(3)
+exemptions (notably compliance with a legal obligation). Separate **deletable**
+profile/marketing data from **financial records that MUST be retained** for
+AML/record-keeping, and keep the retained set access-restricted and audited.
+Verify against the European Commission's guidance:
+[Information for individuals — your rights (right to erasure)](https://commission.europa.eu/law/law-topic/data-protection/information-individuals_en).
 
 ## Bad example
 

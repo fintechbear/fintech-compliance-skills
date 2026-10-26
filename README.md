@@ -128,8 +128,11 @@ hard limits.
 1. You ask the agent to build something (e.g. "save the customer's card on file").
 2. The agent loads the relevant skill(s) — here, `global/pci-dss.md` plus your
    language and database files.
-3. The skill tells it what to **do** (tokenise via the processor, never store the
-   PAN) and what it must **never do** (raw PAN at rest, CVV stored at all).
+3. The skill tells it what to **do** (tokenise via the processor; if the PAN must
+   be stored, render it unreadable — encrypt with managed keys, truncate, keyed-hash
+   or tokenise) and what it must **never do** (readable PAN at rest, and — the hard
+   PCI-DSS line — Sensitive Authentication Data such as CVV / full track / PIN
+   stored after authorization).
 4. If the request crosses a red line, the agent **refuses and explains which rule**
    instead of writing the unsafe code.
 
@@ -171,7 +174,10 @@ Each language and database file covers four things in depth:
 
 The refusal policy makes the agent stop rather than produce code that would:
 
-- store a raw card number (PAN) in plaintext, or store a CVV at all;
+- store a card number (PAN) in **readable** form at rest, or store Sensitive
+  Authentication Data (CVV / full track / PIN) after authorization — storing the
+  PAN is allowed only when rendered unreadable (encryption, truncation, keyed hash,
+  tokenisation); our own stricter policy is to not store the CVV at all;
 - store or log a password in plaintext, or hash one with MD5/SHA-1;
 - write a card number, CVV, password, token or full national ID into a log;
 - use weak or home-rolled crypto (MD5, SHA-1, DES, ECB, hardcoded keys);

@@ -100,12 +100,72 @@ Default to **optimistic concurrency** with a concurrency token; reach for pessim
 
 > **Money-type note (refusal-adjacent):** represent monetary amounts as `decimal` or integer minor units — never `double`/`float`. Binary floats introduce rounding errors in financial math.
 
+### Converting a `decimal` amount to integer minor units (correctly)
+
+`(long)(amount * 100m)` is **wrong** and appears in the Bad example for a reason: it hardcodes 2 decimal places (breaks JPY=0 and KWD=3), it *truncates* over-precise input silently (`1.009 → 100` cents, money vanishes), it can *round* unexpectedly for other scales, and the `(long)` cast is unchecked (overflow wraps). A correct conversion is driven by the currency's **ISO 4217 minor-unit exponent** and rejects anything it cannot represent exactly.
+
+Rules the converter must enforce:
+- **Look up the exponent** (ISO 4217): e.g. `JPY=0`, `USD=EUR=GBP=2`, `KWD=BHD=OMR=JOD=3`. Keep a vetted table (or a maintained library such as `NodaMoney`); do not assume 2.
+- **Reject unsupported currencies** — an unknown code is an error, not "default to 2".
+- **Reject over-precision instead of truncating/rounding** — `req.Amount` with more decimal places than the currency allows is a client bug; return 400, don't silently drop sub-units.
+- **Use explicit `MidpointRounding` only where rounding is legitimately required and documented** (e.g. interest, FX) — never as a silent fix for bad input.
+- **Use `checked` arithmetic** so overflow throws instead of wrapping.
+- **Verify source AND destination account currency match** the request currency — never move 500 of one currency into an account denominated in another.
+
+```csharp
+// Illustrative — currency table abbreviated; prove against a vetted ISO 4217 source before shipping.
+public static class Money
+{
+    // ISO 4217 minor-unit exponents (number of decimal places). Extend from the official list.
+    private static readonly IReadOnlyDictionary<string, int> Exponents = new Dictionary<string, int>
+    {
+        ["JPY"] = 0, ["KRW"] = 0, ["VND"] = 0,          // 0-decimal
+        ["USD"] = 2, ["EUR"] = 2, ["GBP"] = 2,          // 2-decimal (the common case)
+        ["KWD"] = 3, ["BHD"] = 3, ["OMR"] = 3, ["JOD"] = 3, // 3-decimal
+    };
+
+    /// <summary>Exact decimal → integer minor units for the given ISO 4217 currency.</summary>
+    /// <exception cref="ArgumentException">Unsupported currency.</exception>
+    /// <exception cref="ArgumentException">Amount has more precision than the currency allows.</exception>
+    /// <exception cref="OverflowException">Value does not fit in Int64.</exception>
+    public static long ToMinorUnits(decimal amount, string currency)
+    {
+        if (!Exponents.TryGetValue(currency, out int exponent))
+            throw new ArgumentException($"unsupported currency '{currency}'", nameof(currency));
+
+        // Reject over-precision: scale must not exceed the currency exponent. No silent truncation.
+        if (decimal.Round(amount, exponent) != amount)
+            throw new ArgumentException(
+                $"amount {amount} has more than {exponent} decimal places for {currency}", nameof(amount));
+
+        decimal scaled = amount * Pow10(exponent);     // exact: amount already fits in `exponent` places
+        checked { return (long)scaled; }               // overflow throws, never wraps
+    }
+
+    private static decimal Pow10(int e) => e switch { 0 => 1m, 1 => 10m, 2 => 100m, 3 => 1000m, _ =>
+        throw new ArgumentOutOfRangeException(nameof(e)) };
+}
+```
+
+**Worked examples:**
+- **JPY (exponent 0):** `ToMinorUnits(1500m, "JPY") == 1500`. `ToMinorUnits(1500.5m, "JPY")` → **rejected** (0 decimals allowed).
+- **USD (exponent 2):** `ToMinorUnits(19.99m, "USD") == 1999`. `ToMinorUnits(19.999m, "USD")` → **rejected** (over-precision; the old `(long)(x*100m)` would have silently truncated to `1999`).
+- **KWD (exponent 3):** `ToMinorUnits(2.500m, "KWD") == 2500`. `ToMinorUnits(2.5m, "KWD") == 2500` (2.5 rounds to itself at 3 places, allowed). `ToMinorUnits(2.5001m, "KWD")` → **rejected**.
+
+**Test outline (write these):**
+- *zero:* `ToMinorUnits(0m, "USD") == 0`.
+- *negative:* `ToMinorUnits(-19.99m, "USD") == -1999` (sign preserved; the business layer, not this converter, decides whether a negative amount is legal for the operation).
+- *upper-bound:* a value just over `long.MaxValue` minor units throws `OverflowException` (checked), not a wrapped negative.
+- *over-precision:* `19.999 USD`, `1500.5 JPY`, `2.5001 KWD` each throw `ArgumentException`.
+- *unsupported currency:* `"XYZ"` throws `ArgumentException`.
+- *currency match:* a transfer whose source/destination account currency differs from `req.Currency` is rejected before any debit.
+
 ### Hashed one-way — passwords
 
-Use **ASP.NET Core Identity's `PasswordHasher<TUser>`** (`Microsoft.AspNetCore.Identity`). Its current (Identity v3) format is **PBKDF2 with HMAC-SHA256, a 128-bit random salt, a 256-bit subkey, and 100,000 iterations**, with a format-version marker byte so the hasher can **transparently re-hash on next login** when you raise the work factor. Do not re-implement password hashing by hand.
+Use **ASP.NET Core Identity's `PasswordHasher<TUser>`** (`Microsoft.AspNetCore.Identity`). **Bind the work factor to the framework version — it is not a universal constant.** As of **.NET 8 (v8.0.0)** the Identity **v3** format is **PBKDF2 with HMAC-SHA512, a 128-bit random salt, a 256-bit subkey, and 100,000 iterations** (`PasswordHasherCompatibilityMode.IdentityV3`, format marker byte `0x01`; the PRF, iteration count and salt length are stored in the hash itself). This changed in .NET: pre-.NET 6 builds used **HMAC-SHA256 at 10,000 iterations**, so a hash's real parameters are whatever the hashing build wrote, not a fixed claim. On verify, v8 returns `SuccessRehashNeeded` when the stored iteration count is below the configured one **or** the stored PRF is the older SHA1/SHA256, so the hasher **transparently re-hashes on next login** as you raise the work factor or move versions forward. Tune via `PasswordHasherOptions.IterationCount` (default **100,000** on .NET 8). Do not re-implement password hashing by hand, and do not hardcode "SHA256/100k" as a timeless fact — pin it to the ASP.NET Core version you ship.
 
 - **Preferred / stronger:** OWASP's primary recommendation is **Argon2id**. On .NET, use the **`Konscious.Security.Cryptography.Argon2`** library (there is no first-party Argon2 in the BCL). OWASP's current minimum configuration is **19 MiB memory, 2 iterations, 1 degree of parallelism** (tune upward to your latency budget). Store the algorithm + parameters alongside the hash so you can migrate.
-- **PBKDF2** remains acceptable and is the pragmatic default via `PasswordHasher<TUser>`; it is also the choice when **FIPS 140** validation is a hard requirement (Argon2 is not FIPS-approved). If you call PBKDF2 directly, use `Rfc2898DeriveBytes` with `HashAlgorithmName.SHA256` and ≥100,000 iterations.
+- **PBKDF2** remains acceptable and is the pragmatic default via `PasswordHasher<TUser>`; it is also the choice when **FIPS 140** validation is a hard requirement (Argon2 is not FIPS-approved). If you call PBKDF2 directly, use `Rfc2898DeriveBytes` / `KeyDerivation.Pbkdf2` with `HashAlgorithmName.SHA512` (matching Identity v3 on .NET 8) and an iteration count at or above the framework default (≥100,000 on .NET 8), and raise it over time.
 - **Forbidden (refusal rules 2, 4):** MD5, SHA1, plain SHA-256 "with a salt", any reversible encryption of a password, or a hardcoded/global salt.
 
 ### Encrypted two-way — PAN, IBAN, national ID
@@ -159,8 +219,12 @@ Encode jurisdiction as **configuration/policy** (residency region, retention win
 
 Idiomatic, authenticated, idempotent, audited transfer with AES-GCM-encrypted PII at rest and masked logging.
 
+> **Status: illustrative, not verified-compilable.** This sketch omits the surrounding project (DbContext, entities, `User.GetUserId()`/`GetTenantId()`, DI) and has not been compiled. Treat it as a correct-shape reference, not drop-in production code; the red lines it demonstrates (idempotency scoping, object authorization, currency match, checked money math, atomic audit) are the point.
+
 ```csharp
 using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
 using Destructurama.Attributed;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -177,7 +241,7 @@ public sealed record TransferRequest(
 public sealed class TransferController(AppDbContext db, ILogger<TransferController> log) : ControllerBase
 {
     [HttpPost]
-    [Authorize(Policy = "transfers.create")]                 // least privilege (refusal rule 10)
+    [Authorize(Policy = "transfers.create")]                 // endpoint permission — NECESSARY, NOT SUFFICIENT
     public async Task<IActionResult> Post(
         [FromHeader(Name = "Idempotency-Key")] string idemKey,
         [FromBody] TransferRequest req,
@@ -186,37 +250,80 @@ public sealed class TransferController(AppDbContext db, ILogger<TransferControll
         if (string.IsNullOrWhiteSpace(idemKey)) return BadRequest("Idempotency-Key required");
         if (req.Amount <= 0) return BadRequest("amount must be positive");
 
-        // Idempotency: DB unique constraint on IdempotencyKey is the real guarantee.
-        var existing = await db.Transfers.AsNoTracking()
-            .FirstOrDefaultAsync(t => t.IdempotencyKey == idemKey, ct);
-        if (existing is not null) return Ok(new { existing.Id, existing.Status });
+        var tenantId = User.GetTenantId();   // every record and the idempotency key are scoped by tenant
+        var actorId  = User.GetUserId();
+
+        // Payload fingerprint: same key + same payload is a safe replay; same key + different payload is a conflict.
+        var fingerprint = Fingerprint(req);
+
+        // Idempotency key is scoped by (tenant, operation, key) — a DB unique constraint on that TRIPLE is the
+        // real guarantee (an in-memory check races). Two tenants reusing the same client key never collide.
+        var prior = await db.IdempotencyRecords.AsNoTracking().FirstOrDefaultAsync(
+            r => r.TenantId == tenantId && r.Operation == "transfers.create" && r.Key == idemKey, ct);
+        if (prior is not null)
+        {
+            if (prior.PayloadFingerprint != fingerprint)
+                return Conflict("Idempotency-Key reused with a different payload");  // explicit 409, not a silent replay
+            return Ok(JsonSerializer.Deserialize<object>(prior.StoredResponse));     // replay the stored result verbatim
+        }
 
         await using var tx = await db.Database.BeginTransactionAsync(
             System.Data.IsolationLevel.Serializable, ct);
         try
         {
-            var from = await db.Accounts.FirstAsync(a => a.Id == req.FromAccountId, ct);
-            var to   = await db.Accounts.FirstAsync(a => a.Id == req.ToAccountId, ct);
+            // Object-level authorization + tenant scoping: load the accounts WITHIN this tenant, and prove the
+            // actor may act on the SOURCE account — endpoint policy alone does not say "this actor owns THIS account".
+            var from = await db.Accounts.FirstOrDefaultAsync(
+                a => a.Id == req.FromAccountId && a.TenantId == tenantId, ct);
+            var to   = await db.Accounts.FirstOrDefaultAsync(
+                a => a.Id == req.ToAccountId && a.TenantId == tenantId, ct);
+            if (from is null || to is null) return NotFound("account not found in tenant");
+            if (!await db.AccountGrants.AnyAsync(
+                    g => g.AccountId == from.Id && g.PrincipalId == actorId && g.CanDebit, ct))
+                return Forbid();   // actor is not authorized over THIS source account (object, not just endpoint)
 
-            var minor = (long)(req.Amount * 100m);
+            // Currency must match the request AND both accounts; convert with the ISO 4217-aware converter.
+            if (from.Currency != req.Currency || to.Currency != req.Currency)
+                return BadRequest("account currency mismatch");
+            long minor = Money.ToMinorUnits(req.Amount, req.Currency);   // rejects over-precision / unsupported; checked
+
             if (from.BalanceMinorUnits < minor) return BadRequest("insufficient funds");
 
             from.BalanceMinorUnits -= minor;     // RowVersion token guards against lost updates
             to.BalanceMinorUnits   += minor;
 
-            db.Transfers.Add(new Transfer { Id = Guid.NewGuid(), IdempotencyKey = idemKey,
+            var transferId = Guid.NewGuid();
+            db.Transfers.Add(new Transfer { Id = transferId, TenantId = tenantId, IdempotencyKey = idemKey,
                 FromAccountId = from.Id, ToAccountId = to.Id, AmountMinorUnits = minor,
-                Currency = req.Currency, Status = "posted", ActorId = User.GetUserId() });
+                Currency = req.Currency, Status = "posted", ActorId = actorId });
 
-            db.AuditEvents.Add(AuditEvent.Transfer(User.GetUserId(), from.Id, to.Id, minor, idemKey));
+            db.AuditEvents.Add(AuditEvent.Transfer(actorId, from.Id, to.Id, minor, idemKey));
 
-            await db.SaveChangesAsync(ct);       // debit + credit + audit commit atomically (refusal rule 6)
+            var response = new { id = transferId, status = "posted" };
+            // Persist the idempotency record (unique on tenant+operation+key) IN THE SAME TRANSACTION as the effect,
+            // storing the response so a later replay returns it without re-executing.
+            db.IdempotencyRecords.Add(new IdempotencyRecord {
+                TenantId = tenantId, Operation = "transfers.create", Key = idemKey,
+                PayloadFingerprint = fingerprint, StoredResponse = JsonSerializer.Serialize(response) });
+
+            await db.SaveChangesAsync(ct);       // debit + credit + audit + idempotency commit atomically (refusal rule 6)
             await tx.CommitAsync(ct);
 
-            // structured + masked: @req uses attributes; no interpolation, no PAN/memo in the line
+            // structured + masked: attributes handle masking; no interpolation, no PAN/memo in the line
             log.LogInformation("Transfer posted {IdemKey} {Amount} {Currency} by {ActorId}",
-                idemKey, req.Amount, req.Currency, User.GetUserId());
-            return Ok(new { status = "posted" });
+                idemKey, req.Amount, req.Currency, actorId);
+            return Ok(response);
+        }
+        catch (DbUpdateException ex) when (IsUniqueViolation(ex))
+        {
+            // Lost the response-write race: a concurrent identical request already committed under this key.
+            // The unique index on (tenant, operation, key) is the real dedup — re-read and return the stored result.
+            await tx.RollbackAsync(ct);
+            var winner = await db.IdempotencyRecords.AsNoTracking().FirstAsync(
+                r => r.TenantId == tenantId && r.Operation == "transfers.create" && r.Key == idemKey, ct);
+            return winner.PayloadFingerprint == fingerprint
+                ? Ok(JsonSerializer.Deserialize<object>(winner.StoredResponse))
+                : Conflict("Idempotency-Key reused with a different payload");
         }
         catch (DbUpdateConcurrencyException)
         {
@@ -224,11 +331,25 @@ public sealed class TransferController(AppDbContext db, ILogger<TransferControll
             return Conflict("account changed concurrently; retry");   // never blind-overwrite
         }
     }
+
+    // Stable fingerprint of the idempotent payload (order-fixed fields; excludes volatile/non-semantic data).
+    private static string Fingerprint(TransferRequest r) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+            $"{r.FromAccountId}|{r.ToAccountId}|{r.Amount}|{r.Currency}")));
+
+    private static bool IsUniqueViolation(DbUpdateException ex) =>
+        ex.InnerException is Microsoft.Data.SqlClient.SqlException { Number: 2601 or 2627 };
 }
 
-// Passwords via Identity's PasswordHasher (PBKDF2-HMAC-SHA256, 100k iters, auto re-hash).
+// Passwords via Identity's PasswordHasher (.NET 8: PBKDF2-HMAC-SHA512, 100k iters, auto re-hash).
 // PAN encrypted with AES-256-GCM + KMS-wrapped DEK, not IDataProtector.
 ```
+
+**Idempotency, retries, and the limits of a local transaction:**
+- **Response-loss retry (the case the key exists for):** the server commits, then the response is lost to a network drop before the client sees it. The client retries with the *same* `Idempotency-Key`; the stored record is found and the saved response is replayed — no double-spend. This is why the response is persisted inside the transaction, not reconstructed.
+- **Same key, different payload → conflict (409), always.** A key identifies one logical operation. Reusing it with a changed amount or destination is a client bug; returning the first result would hide it, and executing the new payload would violate the key's promise. The stored payload fingerprint is what lets the server tell the two apart.
+- **Object-level authorization, not just endpoint permission.** `[Authorize(Policy="transfers.create")]` says the caller may *call this endpoint*; it does not say the caller may debit *this* account. Re-check ownership/grant on the specific resource inside the handler, scoped to the caller's tenant, so one tenant can never name another tenant's account id.
+- **Local DB transaction ≠ external provider side effect.** The atomic debit+credit+audit+idempotency commit only guarantees *your* database is consistent. A call to an external card network / payment rail / bank API is **not** inside that transaction — it can succeed on the provider while your commit rolls back, or vice versa. For those, pass the idempotency key the provider supports on the outbound call and reconcile via an outbox / saga / provider webhook; do not assume your `CommitAsync` or rollback undid their side effect.
 
 ## Bad example
 
