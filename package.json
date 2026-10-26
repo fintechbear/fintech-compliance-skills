@@ -1,0 +1,34 @@
+{
+  "name": "fintech-compliance-skills",
+  "version": "1.0.0",
+  "description": "Install regulation-aware fintech coding skills into Claude Code, Kiro, or Codex CLI with one command.",
+  "bin": {
+    "fintech-compliance-skills": "installer/index.js"
+  },
+  "files": [
+    "installer/",
+    "skills/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=16"
+  },
+  "keywords": [
+    "fintech",
+    "compliance",
+    "ai-agent",
+    "skills",
+    "claude-code",
+    "kiro",
+    "codex",
+    "pci-dss",
+    "gdpr",
+    "security"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/fintechbear/fintech-compliance-skills.git"
+  },
+  "license": "Apache-2.0"
+}
