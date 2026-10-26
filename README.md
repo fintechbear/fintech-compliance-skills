@@ -77,6 +77,29 @@ Point your agent's skill loader at the `skills/` directory, or paste the relevan
 skill into the system/context before a task. The `refusal/` skill should always be
 loaded so the agent knows its hard limits.
 
+## Releasing (maintainers)
+
+Publishing to npm is automated by GitHub Actions (`.github/workflows/publish.yml`).
+Push a version tag and the workflow publishes:
+
+```bash
+# bump the version in package.json first, then:
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Pick ONE authentication method (one-time setup):
+
+- **No secrets (OIDC trusted publishing):** publish `v1.0.0` once from your terminal
+  (`npm publish --access public`), then on npmjs.com open the package → **Settings →
+  Trusted Publisher → GitHub Actions**, and point it at this repo + `publish.yml`.
+  Every later tag publishes with zero stored secrets.
+- **Automation token:** on npmjs.com create an **Automation** access token, then add
+  it to this repo as a secret named `NPM_TOKEN` (Settings → Secrets and variables →
+  Actions). Works for the first publish too.
+
+The workflow checks that `package.json`'s version matches the tag before publishing.
+
 ## Contributing
 
 New jurisdictions and frameworks are welcome. Keep the file format above, cite the
