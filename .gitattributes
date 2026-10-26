@@ -1,0 +1,6 @@
+# Keep LF so the npx bin script runs on Unix/macOS and files are consistent.
+* text=auto eol=lf
+installer/index.js text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+LICENSE text eol=lf

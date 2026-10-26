@@ -102,6 +102,7 @@ function installSkillDir(baseDir, skills) {
 // Codex uses a single AGENTS.md. We write a compact router that points at the
 // full skill files (kept in the repo) so AGENTS.md stays small but authoritative.
 function installCodex(targetDir, skills) {
+  mkdirp(targetDir);
   const byGroup = {};
   for (const s of skills) {
     (byGroup[s.group] = byGroup[s.group] || []).push(s);
