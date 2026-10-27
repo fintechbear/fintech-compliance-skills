@@ -86,3 +86,23 @@ jobs:
         run: node controls/migrate-refusal-citations.js --check
       - name: Install self-check (source side — FCS ids resolve, no legacy citations)
         run: node installer/diagnose.js --home "$RUNNER_TEMP/no-install" --target "$RUNNER_TEMP/no-install"
+
+  # Eval harness integrity: the deterministic grader, the codex adapter states, and the
+  # config-isolation builder. All three are LLM-FREE self-tests — they prove the eval would
+  # not fool itself (no auto-pass of a rubric, no silent success on a failed/empty run, no
+  # personal global config leaking into a baseline-vs-candidate run). The scored agent run
+  # itself needs a live agent CLI + budget and is NOT a CI job.
+  evals:
+    name: eval-harness-selftests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Deterministic grader self-test
+        run: node evals/grader.js
+      - name: Codex adapter state self-test (no LLM)
+        run: node evals/adapters/codex.selftest.js
+      - name: Config-isolation self-test (no global instruction leak)
+        run: node evals/adapters/isolation.selftest.js

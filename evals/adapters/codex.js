@@ -4,6 +4,13 @@
 // states — never silently treated as success. Does NOT call any LLM itself; it shells
 // out to the real `codex exec` the operator already has configured.
 //
+// CONFIG ISOLATION (the P02 prerequisite): the global CODEX_HOME (~/.codex) on this host is
+// not a bare CLI — it carries personal skills/, rules/, memories/ that would leak into a run
+// and make BASELINE vs CANDIDATE incomparable. prepareCodexHome() builds a CLEAN CODEX_HOME
+// that copies ONLY the credential (auth.json) and the provider config (config.toml, needed
+// for the custom model provider the auth is bound to) and NOTHING ELSE — no skills, rules,
+// memories, plugins. assertNoGlobalLeak() proves the clean home carries none of them.
+//
 // Conditions:
 //   WITHOUT_SKILLS   : sandbox has ONLY the task prompt (no skill files, no AGENTS.md)
 //   CURRENT_BASELINE : sandbox has the baseline skill tree installed
@@ -12,6 +19,33 @@
 // results, grader code, other conditions, or the repo history.
 
 const { spawn } = require('child_process');
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+// Files copied into the clean CODEX_HOME. auth.json = credential; config.toml = the custom
+// model-provider wiring the credential needs. Explicitly NOT copied: skills, rules, memories,
+// plugins, sessions, history — anything that could inject global instructions.
+const ISOLATED_ALLOW = ['auth.json', 'config.toml'];
+const LEAK_NAMES = ['skills', 'rules', 'memories', 'plugins', 'AGENTS.md', 'instructions.md'];
+
+// Build a clean CODEX_HOME under baseDir; returns its path. Throws if no global auth exists.
+function prepareCodexHome(baseDir, globalHome = path.join(os.homedir(), '.codex')) {
+  const dest = path.join(baseDir, 'codex-home');
+  fs.mkdirSync(dest, { recursive: true });
+  let copiedAuth = false;
+  for (const name of ISOLATED_ALLOW) {
+    const src = path.join(globalHome, name);
+    if (fs.existsSync(src)) { fs.copyFileSync(src, path.join(dest, name)); if (name === 'auth.json') copiedAuth = true; }
+  }
+  if (!copiedAuth) throw new Error(`no auth.json in ${globalHome}: cannot run an authenticated, isolated codex`);
+  return dest;
+}
+
+// Assert the clean home carries no global instruction source. Returns the leaked names (empty = clean).
+function assertNoGlobalLeak(codexHome) {
+  return LEAK_NAMES.filter((n) => fs.existsSync(path.join(codexHome, n)));
+}
 
 // Resolve the codex invocation per OS (Windows uses the .ps1 shim via powershell).
 function codexInvocation(promptFile, cwd) {
@@ -25,10 +59,12 @@ function codexInvocation(promptFile, cwd) {
   return { cmd: 'bash', args: ['-lc', `codex exec --skip-git-repo-check -C "${cwd}" - < "${promptFile}"`] };
 }
 
-function runCodex(promptFile, cwd, timeoutMs) {
+function runCodex(promptFile, cwd, timeoutMs, codexHome) {
   return new Promise((resolve) => {
     const { cmd, args } = codexInvocation(promptFile, cwd);
-    const child = spawn(cmd, args, { windowsHide: true });
+    const env = { ...process.env };
+    if (codexHome) env.CODEX_HOME = codexHome; // isolated config/credential home
+    const child = spawn(cmd, args, { windowsHide: true, env });
     let out = '', err = '', done = false;
     const timer = setTimeout(() => {
       if (done) return; done = true;
@@ -49,4 +85,4 @@ function runCodex(promptFile, cwd, timeoutMs) {
   });
 }
 
-module.exports = { runCodex, codexInvocation };
+module.exports = { runCodex, codexInvocation, prepareCodexHome, assertNoGlobalLeak, ISOLATED_ALLOW, LEAK_NAMES };

@@ -197,7 +197,7 @@
     },
     {
       "id": "P08",
-      "status": "TODO",
+      "status": "PARTIAL",
       "depends_on": [
         "P01",
         "P02",
@@ -207,8 +207,21 @@
         "P06",
         "P07"
       ],
-      "evidence": [],
-      "blockers": []
+      "evidence": [
+        "end-to-end deterministic gate GREEN: grader 10/10, adapter 5/5, isolation 8/8, controls 23/33/0, citation idempotent, installer verify + 27/27, diagnose 9/9",
+        "config-isolation prerequisite (P02) CLOSED: prepareCodexHome copies only auth.json+config.toml, assertNoGlobalLeak + isolation.selftest 8/8; empirically 401 without config, real completion with it",
+        "grader hardened: real agent refusal with typographic apostrophe (U+2019) was a false-negative FAIL; norm() folds typographic quotes + decline-reasoning verbs; 2 regression tests; re-grade PASS",
+        "evals/run.js scored runner (3 conditions, isolated home, deterministic grader, bounded; --all for full 40x3)",
+        "real scored: T016 CANDIDATE OK->PASS (genuine PCI+FCS-SAD-001 refusal); T016 WITHOUT_SKILLS + T001 CANDIDATE TIMEOUT->NOT_RUN (honest)",
+        "CI job eval-harness-selftests (grader+adapter+isolation, LLM-free)",
+        "docs/development/P08.md"
+      ],
+      "blockers": [
+        "FULL 40x3 scored eval NOT_RUN: agent latency (most codex calls hit 150-160s timeout on this loaded host) + account/cost (no budget authorized); Claude BLOCKED (low credit)",
+        "fintech-pr-review qualitative discipline stays NEEDS_REVIEW (no deterministic harness)",
+        "PR #8 remains draft off unmerged PR #7 base; merge gated on PR #7 landing first"
+      ],
+      "validated_commit": "212d7a5"
     }
   ],
   "baseline_tests": {

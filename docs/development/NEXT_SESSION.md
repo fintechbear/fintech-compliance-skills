@@ -15,23 +15,25 @@
   container; **no system Node** (use `node:NN` containers), **no agent CLI**.
 - Private connection details are NOT in the repo; they were provided out of band.
 
-## Next phase: P08 (final)
+## Current phase: P08 (final) — PARTIAL
 
-P07 is PASS (commit dbb52c8): `installer/diagnose.js` install self-check (zero-dep, reuses the
-installer's own classify) + `test-diagnose.js` smoke (9/9) + CI wiring (source diagnose in
-control-catalog, diagnose smoke on every installer matrix leg) + `doctor` bin/README. CI green.
+P00–P07 all PASS. P08 deterministic end-to-end gate is GREEN (grader 10/10, adapter 5/5,
+isolation 8/8, controls 23/33/0, citation idempotent, installer verify + 27/27, diagnose 9/9;
+new CI job `eval-harness-selftests`). Config-isolation prerequisite from P02 is CLOSED
+(`prepareCodexHome` + `isolation.selftest` 8/8; empirically auth-only→401, auth+config→real
+completion). The grader was hardened after a REAL agent refusal (typographic apostrophe
+U+2019) was a false-negative; re-grade → PASS.
 
-P08 = end-to-end acceptance + the deferred real-agent eval. Pull everything together:
-1. **Full installer + harness + catalog + diagnose gate** green on a clean checkout (it already
-   is in CI; confirm on `fintech-skills-evolution` head and record the run id).
-2. **The deferred 40×3 scored agent eval** (evals/ already has schema + 40 tasks + a
-   deterministic grader with 8/8 self-test + a codex adapter with 5/5 self-test + CURRENT_BASELINE).
-   Blockers from P02: account/credit limits, config-isolation vs the global CLI config. Run what
-   is genuinely runnable (bounded Codex), mark the rest NOT_RUN/BLOCKED honestly — never present a
-   mock as a real agent evaluation. The CANDIDATE evals for P04/P05/P06 task skills live here too.
-3. Qualitative items (fintech-pr-review discipline, refusal judgement) are NEEDS_REVIEW, not
-   auto-pass. Degenerate outputs (refuse-all, empty) never PASS.
-4. Final honest report + decide PR #8 readiness (still a draft off the unmerged PR #7 base).
+The ONLY open item is the **full 40×3 scored eval**, NOT_RUN this cycle:
+- Agent latency: codex on this host hits the 150–160s timeout on most calls (one T016
+  CANDIDATE returned in 60s and PASSed); a 120-call matrix can't complete reliably here.
+- Account/cost: ~14k tokens/call, no budget authorized; Claude BLOCKED (low credit).
+
+To finish P08 when capacity/budget allow: `node evals/run.js --all` (isolated home, deterministic
+grader, already wired). Record the run id + a cleaned summary (raw outputs are gitignored).
+Then decide PR #8 readiness — it stays a draft off the unmerged PR #7 base (`6fc6e9b`); merge
+is gated on PR #7 landing first.
+
 
 
 ## How to run things
