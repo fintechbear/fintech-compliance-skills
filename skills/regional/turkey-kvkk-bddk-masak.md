@@ -18,10 +18,11 @@ user." Map the activity to the authority, then apply that regime:
   supervises banks and other credit institutions.
 - **Payment institutions & e-money institutions → TCMB** (Türkiye Cumhuriyet Merkez
   Bankası / CBRT). Law No. 6493 on Payment and Securities Settlement Systems, Payment
-  Services and Electronic Money Institutions (dated 20/6/2013). Since the 20 November
-  2019 amendment, regulatory and supervisory authority for payment/e-money
-  institutions moved **from BDDK to TCMB**; today TCMB handles both licensing and
-  supervision in this area. Do NOT lump payment/e-money under BDDK.
+  Services and Electronic Money Institutions (dated 20/6/2013). Since the November
+  2019 amendment (amending Law No. 7192, passed 22 November 2019), regulatory and
+  supervisory authority for payment/e-money institutions moved **from BDDK to TCMB**;
+  today TCMB handles both licensing and supervision in this area. Do NOT lump
+  payment/e-money under BDDK.
 - **AML/CTF → MASAK.** Law No. 5549 (Prevention of Laundering Proceeds of Crime).
   Obliged entities (banks, payment/e-money institutions, and others listed in the law)
   must identify customers, monitor transactions, report suspicious activity, and
