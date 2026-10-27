@@ -87,14 +87,14 @@ async function main() {
     return posted === 1 && (posted + replayed) === 20 && (await balance(pool, 'T1', 'A')) === 9_00;
   });
   await check('concurrency: competing debits never overdraw AND at least one succeeds', async () => {
-    await fresh(10_00, 0); // 10.00 available, 15 competing 1.00 debits with distinct keys
+    await fresh(); // 10.00 available, 15 competing 1.00 debits with distinct keys
     const results = await Promise.all(Array.from({ length: 15 }, () => transfer(pool, 'T1', 'xfer', k(), { src: 'A', dst: 'B', amount: '1.00', currency: 'USD' })));
     const posted = results.filter((r) => r.outcome === 'posted').length;
     const bal = await balance(pool, 'T1', 'A');
     return posted >= 1 && posted <= 10 && bal === 10_00 - posted * 1_00 && bal >= 0 && (await balance(pool, 'T1', 'B')) === posted * 1_00;
   });
   await check('insufficient funds rejected', async () => {
-    await fresh(1_00, 0);
+    await initSchema(pool); await seedAccount(pool, 'T1', 'A', 'USD', 1_00); await seedAccount(pool, 'T1', 'B', 'USD', 0);
     return (await transfer(pool, 'T1', 'xfer', k(), { src: 'A', dst: 'B', amount: '2.00', currency: 'USD' })).outcome === 'insufficient_funds';
   });
 
