@@ -143,17 +143,68 @@ Full per-claim findings with source URLs + dates are in the four reports under
 - The content review covered the files listed; **other language/database modules were
   not re-reviewed** for compliance accuracy this cycle.
 
+## Second round — G1–G4 (deeper Codex migration + atomic AGENTS.md write)
+
+A later independent review found four more verified bugs on `0ca19a9`. Each was
+reproduced as a failing test first, then root-caused and fixed. New commit: **`1d5f500`**.
+
+### Fixture provenance (this round)
+
+Real old **Codex** output, captured by running the old installers from git history
+(never regenerated from current code), frozen under `installer/fixtures/`:
+
+- `fixtures/pr5/codex/AGENTS.md` — from `b742e893` (old Codex wrote only AGENTS.md, a
+  heading-led block with no marker, closing with the blockquote note).
+- `fixtures/pr6/codex/AGENTS.md` + `fixtures/pr6/codex/skills/**` — from `19b4f33` (copied
+  the rule tree but wrote **no manifest** — exactly the G3 scenario).
+
+The runtime recognises an unedited old Codex rule file via `CODEX_LEGACY_FILE_HASHES`
+(byte-exact sha256 prefixes of those raw files). Codex fixtures are pinned LF and are
+**not** shipped in the npm package (`files` lists only `installer/index.js`, `skills/`,
+README, LICENSE).
+
+### Findings
+
+| ID | Finding | Root cause | Fix + test |
+|---|---|---|---|
+| **G1** | Edited managed Codex file deleted on the **second** re-install (survived the first) | the preserved edit's hash was written into the manifest as a MANAGED baseline, so the next run saw it as unchanged package content | manifest **v2** with separate `managed` vs `userEdited` maps; a preserved edit is recorded only in `userEdited`, never as a managed baseline. Test `G1` asserts survival across **three** re-installs and a later A→B update; `--force` replaces; unknown files preserved even under `--force` |
+| **G2** | User text after a legacy section deleted when it referenced `skills/` (e.g. `Always read skills/team-policy.md`) | boundary was "the last line mentioning `skills/`", but user prose references `skills/` too | bound the generated section by its KNOWN STRUCTURE (heading .. closing blockquote note `follow its Do / Never / examples`); an unrecognised shape is **left in place and reported as a conflict**, never deleted. Test `G2` uses the REAL frozen old AGENTS.md with user text (incl. a `skills/team-policy.md` ref) after it |
+| **G3** | Real `19b4f33` Codex install (rule tree present, NO manifest) not upgraded — 6 modules left stale, run reported success | manifest-less → every file treated as an unknown user file → old content carried over the new package | `CODEX_LEGACY_FILE_HASHES` (byte-exact, from the real old Codex installs) recognises unedited old rule files and upgrades them. Test `G3` asserts the 6 critical modules (`postgresql`, `pci-dss`, `csharp-dotnet`, `refusal-policy`, `eu-gdpr-psd2-dora`, `turkey-kvkk-bddk-masak`) become **byte-identical to current source**; genuine edits + unknown files preserved |
+| **G4** | Partial AGENTS.md write left a corrupt active file; `.bak` not auto-restored | AGENTS.md was truncate-written in place | write to a unique same-dir temp file, then **atomic rename**; a crash hits only the temp file. Tree backup kept until BOTH tree swap AND AGENTS.md rename succeed; if rollback itself fails the recovery backup is NOT deleted and a clear error names its path. Test `G4` injects failure at 5 stages: temp-write, rename, tree-commit, first-install, rollback-failure |
+
+### Partial-write / recovery results (G4, test-verified)
+
+- temp-write failure → active AGENTS.md unchanged; partial bytes landed only in the temp file; no orphan `.fcs-tmp/stage/old`.
+- rename failure → active AGENTS.md is the previous good content; rule tree rolled back.
+- tree-commit failure → tree + AGENTS.md both unchanged.
+- first-install failure → no AGENTS.md written; no false success; no orphans.
+- rollback-failure → an error is surfaced (no silent success) and the `.fcs-old` recovery backup is kept on disk holding the previous good tree.
+
+### Repeated-install / upgrade results (test-verified)
+
+- G1: edit preserved byte-for-byte across install → edit → re-install ×3; a later A→B package change replaces unchanged managed files via the manifest while keeping the edit.
+- G3: second and third re-installs keep upgraded content stable; the A→B path works through the v2 manifest.
+
+### Test suite this round
+
+`node --test installer/test.js` → **27 tests, 27 pass, 0 fail** (23 kept + G1–G4), stable
+across repeated runs (fs-stub tests run sequentially within the file). Existing F03/F03b
+(write→rename) and F05c/F01 (synthetic→real fixture) tests were updated to the new
+behaviour, not weakened. `node installer/verify.js` passes; clean `npm ci`. Node v24, Windows.
+
 ## Correction to the previous report
 
 The prior report (`05590bf`) listed "15 tests" and marked the pre-.NET-6 PasswordHasher
-figure and the Turkey amendment date as settled. This cycle: the suite is **23 tests**;
-the PasswordHasher version boundary was **wrong (.NET 7, not pre-.NET 6)** and is fixed;
-the Turkey date was **wrong (22 Nov 2019, Law 7192)** and is fixed. The previous
-"Remaining blockers: none" is replaced by the explicit list below.
+figure and the Turkey amendment date as settled. Earlier this cycle: the suite grew to
+**23 tests**; the PasswordHasher version boundary was **wrong (.NET 7, not pre-.NET 6)**
+and the Turkey date was **wrong (22 Nov 2019, Law 7192)** — both fixed. This round adds
+G1–G4 (**27 tests**) and corrects an installer bug the prior round's tests did not catch:
+a managed Codex edit was still lost on the *second* re-install, and the old Codex
+migration (G2/G3) and AGENTS.md write (G4) were not as safe as the prior report implied.
 
 ## Remaining blockers
 
-- **CI result for the final commit (`fa2642c`) must be confirmed on GitHub Actions**
+- **CI result for the final commit (`1dd106c`) must be confirmed on GitHub Actions**
   after the branch is pushed. Local runs pass; the cross-platform/Node-matrix result is
   only authoritative from Actions on that exact commit.
 - Open follow-ups (out of scope here): compile-and-run a real .NET + PostgreSQL
