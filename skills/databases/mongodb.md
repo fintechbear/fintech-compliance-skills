@@ -237,7 +237,7 @@ hashed **in the application layer** with a memory-hard algorithm — **Argon2id*
 (OWASP-recommended) or **bcrypt** as fallback — and only the hash string is stored in a
 Mongo document. See the matching **language** skill for the concrete library
 (`argon2-cffi`, Spring Security, `golang.org/x/crypto/argon2`, etc.). **MD5 and SHA-1/
-SHA-2 are not password hashes** (refusal rules 2 & 4).
+SHA-2 are not password hashes** (refusal FCS-SECRET-001/FCS-CRYPTO-001).
 
 MongoDB's *own* database-user credentials use **SCRAM-SHA-256** (salted challenge-
 response) by default for auth — that is the server's internal mechanism, separate from
@@ -353,7 +353,7 @@ const secureClient = new MongoClient(uri, {
 - **Crypto-shredding** for GDPR/KVKK right-to-erasure: destroy a per-subject DEK and the
   subject's encrypted fields become unrecoverable — a practical "delete" when physical
   purge is hard.
-- **Forbidden (red lines, refusal rules 4/7/8):** local master keyfile in production,
+- **Forbidden (red lines, refusal FCS-SECRET-002/FCS-CRYPTO-001/FCS-TLS-001):** local master keyfile in production,
   hardcoded keys, home-rolled crypto, MD5/SHA-1 for integrity or passwords, ECB mode,
   storing CVV at all, and disabling TLS certificate validation.
 
@@ -555,22 +555,22 @@ to an insert-only collection, and transient data self-expires.
 ```javascript
 // ❌ Bad — multiple red lines in one setup
 // mongod started with NO --auth and bound to 0.0.0.0, no TLS:
-//   mongod --bind_ip 0.0.0.0            // open to the internet, no authentication (rule 10)
+//   mongod --bind_ip 0.0.0.0            // open to the internet, no authentication (FCS-AUTHZ-001)
 
 // App connects with TLS validation disabled and stores everything in the clear:
 const client = new MongoClient(
-  "mongodb://admin:hunter2@db:27017",             // hardcoded credentials (rule 7)
-  { tls: true, tlsAllowInvalidCertificates: true } // disables MITM protection (rule 8)
+  "mongodb://admin:hunter2@db:27017",             // hardcoded credentials (FCS-SECRET-002)
+  { tls: true, tlsAllowInvalidCertificates: true } // disables MITM protection (FCS-TLS-001)
 );
 
 async function saveCard(db, user, pan, cvv, pw) {
   await db.collection("users").insertOne({
-    pan,                                            // raw PAN stored (PCI, rule 1)
-    cvv,                                            // CVV stored after auth — forbidden (rule 1)
-    password: require("crypto").createHash("md5")   // MD5 "hash" — broken (rules 2 & 4)
+    pan,                                            // raw PAN stored (PCI, FCS-PAN-001/FCS-SAD-001)
+    cvv,                                            // CVV stored after auth — forbidden (FCS-PAN-001/FCS-SAD-001)
+    password: require("crypto").createHash("md5")   // MD5 "hash" — broken (FCS-SECRET-001/FCS-CRYPTO-001)
       .update(pw).digest("hex")
   });
-  console.log(`saved card ${pan} cvv ${cvv} for ${user.ssn}`); // logs PAN+CVV+SSN (rule 3)
+  console.log(`saved card ${pan} cvv ${cvv} for ${user.ssn}`); // logs PAN+CVV+SSN (FCS-LOG-001)
 }
 
 async function pay(db, a, b, amount) {
@@ -578,16 +578,16 @@ async function pay(db, a, b, amount) {
   const src = await db.collection("acct").findOne({ _id: a });
   await db.collection("acct").updateOne({ _id: a }, { $set: { balance: src.balance - 19.99 * amount } });
   await db.collection("acct").updateOne({ _id: b }, { $inc: { balance: 19.99 * amount } });
-  // no audit record written at all — money moved invisibly (rule 6)
+  // no audit record written at all — money moved invisibly (FCS-AUDIT-001)
 }
 ```
 
 **The red lines it crosses:** runs with no authentication and no TLS, open to the
-network (rules 8 & 10); hardcodes credentials (rule 7) and disables certificate
-validation (rule 8); stores raw PAN and CVV (PCI-DSS, rule 1); "hashes" a password with
-MD5 (rules 2 & 4); logs PAN, CVV, and SSN (rule 3); uses JS `float` for money (silent
+network (FCS-TLS-001/FCS-AUTHZ-001); hardcodes credentials (FCS-SECRET-002) and disables certificate
+validation (FCS-TLS-001); stores raw PAN and CVV (PCI-DSS, FCS-PAN-001/FCS-SAD-001); "hashes" a password with
+MD5 (FCS-SECRET-001/FCS-CRYPTO-001); logs PAN, CVV, and SSN (FCS-LOG-001); uses JS `float` for money (silent
 rounding drift) and a non-atomic read-modify-write with no transaction, no idempotency,
-and **no audit record** (rule 6 — bypassing audit on money movement). An agent asked to
+and **no audit record** (FCS-AUDIT-001 — bypassing audit on money movement). An agent asked to
 write this must **refuse** per
 [`refusal/refusal-policy.md`](../refusal/refusal-policy.md) and offer the compliant
 baseline (auth + TLS + at-rest + CSFLE, Decimal128, atomic audited transaction,

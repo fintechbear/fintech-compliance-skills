@@ -63,9 +63,10 @@ for (const f of skillFiles) {
   while ((m = citeRe.exec(text))) {
     if (!ids.has(m[0])) err(`${path.relative(repoRoot, f)}: cites unknown control id ${m[0]}`);
   }
-  // no legacy numbered citations should remain (except the policy file's own worked example)
+  // no legacy numbered citations should remain (except the policy file's own worked example).
+  // Catch singular, comma/slash/ampersand/"and" lists, with or without the word "refusal".
   if (!f.endsWith(path.join('refusal', 'refusal-policy.md'))) {
-    const legacy = text.match(/refusal\s+(policy\s+)?rule\s+\d/gi);
+    const legacy = text.match(/\brules?\s+\d/gi);
     if (legacy) err(`${path.relative(repoRoot, f)}: still has legacy numbered citation(s): ${legacy.join(', ')}`);
   }
 }

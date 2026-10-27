@@ -104,7 +104,7 @@ so the controls are different:
   money movement, and may be **hash-chained** (`hash = SHA-256(prev_hash ||
   canonical_row)`) for tamper evidence. Use SHA-256 — never MD5/SHA-1 for integrity.
 - Disabling audit logging on money movement or data access is a hard red line
-  ([`refusal-policy.md`](../refusal/refusal-policy.md) rule 6).
+  ([`refusal-policy.md`](../refusal/refusal-policy.md) FCS-AUDIT-001).
 
 ---
 
@@ -271,7 +271,7 @@ convenient but dangerous by default:
 
 - The default `block_encryption_mode` is **`aes-128-ecb`** — **ECB mode**, which leaks
   structure (identical plaintext blocks → identical ciphertext) and is a crypto red line
-  ([`refusal-policy.md`](../refusal/refusal-policy.md) rule 4). ECB has **no IV**, which
+  ([`refusal-policy.md`](../refusal/refusal-policy.md) FCS-CRYPTO-001). ECB has **no IV**, which
   is *why* people use it for equality lookups — and that equality-preserving property is
   the leak.
 - ECB/CBC here provide **no authentication** (no AEAD tag) — ciphertext can be tampered
@@ -327,7 +327,7 @@ value in an authenticated AEAD ciphertext column.
 defaults are usually stronger — see the language skill), **bcrypt** as fallback. Store
 the PHC-format hash string in a `VARCHAR(255)` column. **Never** `MD5()`, `SHA1()`,
 `SHA2()`, or `PASSWORD()` to hash application user passwords — fast hashes are crackable
-at billions/sec and MD5/SHA1 are broken (refusal rules 2 & 4). MySQL's own
+at billions/sec and MD5/SHA1 are broken (refusal FCS-SECRET-001/FCS-CRYPTO-001). MySQL's own
 `caching_sha2_password` authentication plugin (the 8.0 default, for *DB account* login)
 is fine for authenticating database users, but it is not a substitute for Argon2id on
 your application's end-user passwords.
@@ -413,7 +413,7 @@ SET DEFAULT ROLE 'app_write' TO 'svc_payments'@'10.0.%';
 - **TLS in transit.** `require_secure_transport=ON` rejects any non-encrypted
   connection; enforce TLS 1.2+ (ideally 1.3), valid certificates, and per-account
   `REQUIRE SSL/X509`. Never disable certificate validation on clients
-  ([`refusal-policy.md`](../refusal/refusal-policy.md) rule 8).
+  ([`refusal-policy.md`](../refusal/refusal-policy.md) FCS-TLS-001).
 - **Audit logging.** *MySQL:* **MySQL Enterprise Audit** (`audit_log` plugin, JSON,
   filterable by `audit_log_filter`) — **Enterprise Edition only**; MySQL Community has no
   first-class audit plugin (people substitute `server_audit` from Percona/MariaDB or the
@@ -499,10 +499,10 @@ literal leakage into logs), **no PAN/CVV in the schema at all**, and a least-pri
 CREATE TABLE cards (
   pan   VARCHAR(20),                       -- storing raw PAN (PCI red line, FCS-PAN-001)
   cvv   VARCHAR(4),                         -- storing CVV after auth — forbidden
-  pw_md5 CHAR(32)                           -- MD5 "password hash" — broken (rules 2 & 4)
+  pw_md5 CHAR(32)                           -- MD5 "password hash" — broken (FCS-SECRET-001/FCS-CRYPTO-001)
 ) ENGINE=MyISAM;                            -- MyISAM: no transactions, no row locks
 
-SET block_encryption_mode = 'aes-128-ecb'; -- ECB mode — crypto red line (rule 4)
+SET block_encryption_mode = 'aes-128-ecb'; -- ECB mode — crypto red line (FCS-CRYPTO-001)
 INSERT INTO cards VALUES (
   AES_ENCRYPT('4111111111111111','hardcoded-key'),   -- key as SQL literal -> lands in query log
   '123',                                              -- CVV stored
@@ -512,14 +512,14 @@ INSERT INTO cards VALUES (
 -- transfer with no transaction, no lock, float money, no audit, no idempotency
 UPDATE accounts SET balance = balance - 19.99 WHERE id = 1;   -- FLOAT drift, lost-update race
 UPDATE accounts SET balance = balance + 19.99 WHERE id = 2;   -- separate stmts: partial failure possible
--- (no audit row written at all — money moves invisibly, rule 6)
+-- (no audit row written at all — money moves invisibly, FCS-AUDIT-001)
 ```
 
 **The red lines it crosses:** stores raw PAN and CVV (PCI-DSS, FCS-PAN-001); "hashes"
-a password with MD5 (rules 2 & 4); uses **ECB** with a **hardcoded key passed as a SQL
-literal** that the query log will capture (rules 4 & 7); puts financial data in **MyISAM**
+a password with MD5 (FCS-SECRET-001/FCS-CRYPTO-001); uses **ECB** with a **hardcoded key passed as a SQL
+literal** that the query log will capture (FCS-CRYPTO-001/FCS-SECRET-002); puts financial data in **MyISAM**
 (no transactions, no row locks); uses `FLOAT`-style money (rounding drift); and moves
 funds in two unlocked, un-transactioned statements with **no idempotency and no audit
-record** (rule 6 — bypassing audit on money movement). An agent asked to write this must
+record** (FCS-AUDIT-001 — bypassing audit on money movement). An agent asked to write this must
 **refuse** per [`refusal/refusal-policy.md`](../refusal/refusal-policy.md) and offer the
 compliant InnoDB + TDE + tokenize + AES-256-GCM + atomic-audited-transfer pattern above.

@@ -30,7 +30,7 @@ High-throughput payment infrastructure logs a lot; redaction must be a **securit
 
 **What is MASKED before it reaches any sink.** PAN (show at most first-6/last-4, e.g. `411111******1111`), CVV/CVC (never — not even masked), passwords, password hashes, API keys/secrets, bearer/refresh tokens, full national IDs (KVKK/GDPR), private keys, full IBAN (mask to last 4), session cookies, OTP codes, encryption keys.
 
-**What is NEVER logged, at any level.** CVV/CVC/CVV2, full track/magstripe data, PIN or PIN blocks, the raw request body of a card-entry endpoint, plaintext passwords, the AES data key or KMS plaintext key, and the full PAN. These are refusal-policy red lines (rules 1, 3, 4).
+**What is NEVER logged, at any level.** CVV/CVC/CVV2, full track/magstripe data, PIN or PIN blocks, the raw request body of a card-entry endpoint, plaintext passwords, the AES data key or KMS plaintext key, and the full PAN. These are refusal-policy red lines (FCS-PAN-001/FCS-SAD-001/FCS-LOG-001).
 
 **Redaction mechanism — allow-list, not deny-list.** A regex deny-list over free text fails the moment data is JSON-escaped, wrapped in an error, or renamed. Attach `LogValuer` to every type that can hold a secret and emit only the fields that are safe:
 
@@ -150,7 +150,7 @@ func HashPassword(pw string) (string, error) {
 
 **Encrypted two-way — PAN / IBAN / national ID.** Use **AES-256-GCM** via `crypto/aes` + `crypto/cipher` (`cipher.NewGCM`), which gives authenticated encryption (confidentiality + tamper detection).
 
-- **Key:** 32 bytes (AES-256). The key is a **data key** issued by a KMS under envelope encryption — call KMS `GenerateDataKey`, use the plaintext data key in memory only, store the KMS-wrapped data key alongside the ciphertext, and zero the plaintext key after use. Never a static/hardcoded key (refusal rules 4, 7).
+- **Key:** 32 bytes (AES-256). The key is a **data key** issued by a KMS under envelope encryption — call KMS `GenerateDataKey`, use the plaintext data key in memory only, store the KMS-wrapped data key alongside the ciphertext, and zero the plaintext key after use. Never a static/hardcoded key (refusal FCS-SECRET-002/FCS-CRYPTO-001).
 - **Nonce:** 12 bytes, fresh from `crypto/rand` for **every** encryption, prepended to the ciphertext. **Reusing a nonce with the same key is catastrophic for GCM** — it breaks confidentiality and forgeability.
 - Bind context with GCM's additional authenticated data (AAD), e.g. the record id, so ciphertext can't be moved between rows.
 
@@ -239,7 +239,7 @@ func Charge(pan, cvv string, amount float64) { // float money — rounding error
 }
 ```
 
-**Why refuse:** this crosses refusal-policy rules 1 (store PAN/CVV), 2 (broken password hash), 3 (log PAN/CVV), 4 (hardcoded key, broken crypto, fixed IV), and 7 (hardcoded credential), plus SQL injection and float money. The compliant rewrite is the Good example: tokenize at the gateway, store only the token + masked PAN, Argon2id for passwords, AES-256-GCM with a KMS data key and a random per-message nonce, parameterized SQL, integer minor units, and an atomic audit insert.
+**Why refuse:** this crosses refusal-policy FCS-PAN-001/FCS-SAD-001 (store PAN/CVV), FCS-SECRET-001/FCS-CRYPTO-001 (broken password hash), FCS-SECRET-002 (hardcoded key), FCS-AUDIT-001 (no audit). The compliant rewrite is the Good example: tokenize at the gateway, store only the token + masked PAN, Argon2id for passwords, AES-256-GCM with a KMS data key and a random per-message nonce, parameterized SQL, integer minor units, and an atomic audit insert.
 
 ---
 

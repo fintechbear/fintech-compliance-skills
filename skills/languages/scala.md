@@ -85,9 +85,9 @@ object Pan {
 
 The structured-field masking above is the safety net; the redacting `toString` is the primary control. For **Log4j2**, use a `RewritePolicy` to scrub the message/`MapMessage` before the appender. Do **not** rely only on a pattern-layout regex for JSON payloads — mask at the structured-field level so nested fields are caught.
 
-**What is NEVER logged:** CVV/CVC, full PAN, full track/magstripe/chip data, PIN or PIN block, plaintext passwords or password hashes, private keys, symmetric data keys, full OAuth/refresh tokens, full national IDs. (Refusal policy rules 1, 3, 4.)
+**What is NEVER logged:** CVV/CVC, full PAN, full track/magstripe/chip data, PIN or PIN block, plaintext passwords or password hashes, private keys, symmetric data keys, full OAuth/refresh tokens, full national IDs. (Refusal policy FCS-PAN-001/FCS-SAD-001/FCS-LOG-001.)
 
-**Spark-specific trap:** `df.show()`, `.collect()`, `.take(n)`, and `.foreach(println)` dump raw rows to driver/executor logs — for a DataFrame holding PAN/PII this is a direct logging-of-card-data violation (rule 3). Log **aggregates and counts**, never sampled rows. Mask in the pipeline (`regexp_replace`, a UDF that returns only last-4) before any debug output, and keep `spark.sql.*` plans free of literal secrets.
+**Spark-specific trap:** `df.show()`, `.collect()`, `.take(n)`, and `.foreach(println)` dump raw rows to driver/executor logs — for a DataFrame holding PAN/PII this is a direct logging-of-card-data violation (FCS-LOG-001). Log **aggregates and counts**, never sampled rows. Mask in the pipeline (`regexp_replace`, a UDF that returns only last-4) before any debug output, and keep `spark.sql.*` plans free of literal secrets.
 
 **Log integrity:** money-movement and security events must be tamper-evident. Options: a dedicated append-only DB table with no `UPDATE`/`DELETE` grant to the app role; ship logs to a **WORM** sink (e.g. S3 Object Lock, write-once bucket) outside the app's delete authority; or hash-chain audit rows (`row.hash = SHA-256(prevHash || canonical(row))`) so a deleted/edited row breaks the chain. Clock-sync the hosts (NTP) so timestamps are trustworthy. PCI-DSS v4.0.1 Req. 10 and SOX both require this.
 
@@ -150,7 +150,7 @@ object Passwords {
 - **bcrypt** is the acceptable fallback when Argon2 is unavailable: `org.mindrot:jbcrypt` (`BCrypt.hashpw(pw, BCrypt.gensalt(12))`) or BouncyCastle's `BCrypt`, work factor ≥10 (≥12 preferred). bcrypt silently truncates input at **72 bytes** — pre-hash long/Unicode passwords (SHA-256 → Base64) before bcrypt, or use Argon2.
 - **PBKDF2** (JCA `PBKDF2WithHmacSHA256`) only where **FIPS 140** forbids Argon2/bcrypt — then ≥600,000 iterations (OWASP).
 - Store an **algorithm/params prefix** (the Argon2 PHC string already carries `m,t,p`) so you can migrate and rehash on login as parameters strengthen.
-- **Forbidden:** MD5, SHA-1, plain SHA-256/512 for passwords, any unsalted or reversible scheme (refusal rules 2, 4).
+- **Forbidden:** MD5, SHA-1, plain SHA-256/512 for passwords, any unsalted or reversible scheme (refusal FCS-SECRET-001/FCS-CRYPTO-001).
 
 ### Encrypted two-way (data you must recover: PAN*, IBAN, national ID)
 
@@ -194,7 +194,7 @@ final class AesGcm[F[_]](implicit F: Sync[F]) {
 
 **Spark note:** do column-level crypto with a KMS-backed UDF, or tokenize upstream — do not ship the master key into executors. For files at rest, use the store's encryption (e.g. Parquet modular encryption + KMS, or bucket SSE-KMS), not home-rolled per-column ciphers.
 
-**Forbidden (FCS-CRYPTO-001):** hardcoded keys/IVs, static or reused IVs, `AES/ECB/*`, `DES`/`3DES`, `"AES"` with no explicit mode (JCE defaults to **ECB** — a trap), home-rolled crypto, `scala.util.Random`/`Math.random()` for keys or IVs (use `SecureRandom`), disabling TLS/cert validation for data in transit (rule 8). TLS 1.2+ for all sensitive transport.
+**Forbidden (FCS-CRYPTO-001):** hardcoded keys/IVs, static or reused IVs, `AES/ECB/*`, `DES`/`3DES`, `"AES"` with no explicit mode (JCE defaults to **ECB** — a trap), home-rolled crypto, `scala.util.Random`/`Math.random()` for keys or IVs (use `SecureRandom`), disabling TLS/cert validation for data in transit (FCS-TLS-001). TLS 1.2+ for all sensitive transport.
 
 ## Country differences (how the same Scala code changes)
 
@@ -274,20 +274,20 @@ val ok:  Boolean  = Passwords.verify(storedPhc, attempt.toCharArray)
 // ❌ Every line crosses a red line — refuse to write this.
 def pay(pan: String, cvv: String, amount: Double): String = {   // Double money — core rule
 
-  log.info(s"charging card $pan cvv $cvv amount $amount")        // logs PAN + CVV — rules 1, 3
+  log.info(s"charging card $pan cvv $cvv amount $amount")        // logs PAN + CVV — FCS-PAN-001/FCS-SAD-001/FCS-LOG-001
 
-  user.password = password                                       // plaintext password — rule 2
-  user.passwordMd5 = MessageDigest.getInstance("MD5")            // broken hash — rules 2, 4
+  user.password = password                                       // plaintext password — FCS-SECRET-001
+  user.passwordMd5 = MessageDigest.getInstance("MD5")            // broken hash — FCS-SECRET-001/FCS-CRYPTO-001
     .digest(password.getBytes).map("%02x".format(_)).mkString
 
-  val c = Cipher.getInstance("AES")                              // defaults to AES/ECB — rule 4
-  val k = new SecretKeySpec("hardcoded-secret".getBytes, "AES")  // hardcoded key — rules 4, 7
+  val c = Cipher.getInstance("AES")                              // defaults to AES/ECB — FCS-CRYPTO-001
+  val k = new SecretKeySpec("hardcoded-secret".getBytes, "AES")  // hardcoded key — FCS-SECRET-002/FCS-CRYPTO-001
 
   val src = Await.result(db.run(accountQuery(from)), 2.seconds)  // no lock, blocking await
   db.run(accountQuery(from).map(_.balance -= amount))            // two separate db.run calls:
   db.run(accountQuery(to).map(_.balance += amount))              // NOT one transaction — lost
-  "ok"                                                           // update, no idempotency, no audit — rule 6
+  "ok"                                                           // update, no idempotency, no audit — FCS-AUDIT-001
 }
 ```
 
-Red lines crossed: storing/logging PAN & CVV (PCI-DSS, rules 1, 3), plaintext & MD5 passwords (rule 2/4), AES-ECB + hardcoded key (rule 4, 7), floating-point money (core), two separate `db.run` calls instead of one `.transactionally` unit so the debit/credit are not atomic (lost update), and no audit record on money movement (rule 6). The compliant alternatives are the *Good example* above and tokenization of the card via the processor. See [`refusal/refusal-policy.md`](../refusal/refusal-policy.md).
+Red lines crossed: storing/logging PAN & CVV (PCI-DSS, FCS-PAN-001/FCS-SAD-001/FCS-LOG-001), plaintext & MD5 passwords (FCS-SECRET-001/FCS-CRYPTO-001), AES-ECB + hardcoded key (FCS-SECRET-002/FCS-CRYPTO-001), floating-point money (core), two separate `db.run` calls instead of one `.transactionally` unit so the debit/credit are not atomic (lost update), and no audit record on money movement (FCS-AUDIT-001). The compliant alternatives are the *Good example* above and tokenization of the card via the processor. See [`refusal/refusal-policy.md`](../refusal/refusal-policy.md).

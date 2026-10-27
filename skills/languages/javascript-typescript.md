@@ -466,7 +466,7 @@ import crypto from "node:crypto";
 async function storeCard(db: any, user: any, pan: string, cvv: string, pw: string) {
   user.card = pan;                                   // storing raw PAN (PCI red line)
   user.cvv = cvv;                                    // storing CVV after auth — forbidden
-  user.password = crypto.createHash("md5").update(pw).digest("hex");  // MD5 "hash" — broken (rule 2/4)
+  user.password = crypto.createHash("md5").update(pw).digest("hex");  // MD5 "hash" — broken (FCS-SECRET-001/FCS-CRYPTO-001)
   console.log(`saved card ${pan} cvv ${cvv} for ${user.ssn}`);        // logging PAN+CVV+SSN
   await db.save(user);
 }
@@ -474,15 +474,15 @@ async function storeCard(db: any, user: any, pan: string, cvv: string, pw: strin
 function pay(a: any, b: any, amount: number) {
   a.balance -= 19.99 * amount;                       // float money -> rounding drift
   b.balance += 19.99 * amount;                       // no transaction, no lock, no idempotency
-  // no audit record written at all                  // money moved invisibly (rule 6)
+  // no audit record written at all                  // money moved invisibly (FCS-AUDIT-001)
 }
 ```
 
 **The red lines it crosses:** stores raw PAN and CVV (PCI-DSS, FCS-PAN-001);
-"hashes" a password with MD5 (rules 2 & 4); logs PAN, CVV, and SSN via `console.log`
-with no redaction (rule 3); uses binary `number` float for money (silent rounding
+"hashes" a password with MD5 (FCS-SECRET-001/FCS-CRYPTO-001); logs PAN, CVV, and SSN via `console.log`
+with no redaction (FCS-LOG-001); uses binary `number` float for money (silent rounding
 errors); moves funds with no transaction, no row lock, no idempotency key, and
-**no audit record** (rule 6 — bypassing audit on money movement). An agent asked to
+**no audit record** (FCS-AUDIT-001 — bypassing audit on money movement). An agent asked to
 write this must **refuse** per
 [`refusal/refusal-policy.md`](../refusal/refusal-policy.md) and offer the compliant
 `handleTransfer` / tokenize-the-card pattern instead.

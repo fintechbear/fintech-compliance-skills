@@ -325,7 +325,7 @@ processor and keep only a token + masked PAN (see "Bad example" and PCI-DSS skil
   key material.
 - **Forbidden (red lines, FCS-CRYPTO-001, FCS-SECRET-002):** hardcoded keys or IVs, static/shared
   nonces, **ECB mode**, DES/3DES, home-rolled crypto, MD5/SHA-1 for integrity or
-  passwords, disabling TLS certificate validation (rule 8).
+  passwords, disabling TLS certificate validation (FCS-TLS-001).
 
 ---
 
@@ -418,20 +418,20 @@ import hashlib, logging
 def store_card(db, user, pan, cvv, pw):
     user.card = pan                                  # storing raw PAN (PCI red line)
     user.cvv = cvv                                   # storing CVV after auth — forbidden
-    user.password = hashlib.md5(pw.encode()).hexdigest()  # MD5 "hash" — broken (rule 2/4)
+    user.password = hashlib.md5(pw.encode()).hexdigest()  # MD5 "hash" — broken (FCS-SECRET-001/FCS-CRYPTO-001)
     logging.info(f"saved card {pan} cvv {cvv} for {user.ssn}")  # logging PAN+CVV+SSN
     db.save(user)
 
 def pay(a, b, amount):
     a.balance -= 19.99 * amount                      # float money -> rounding drift
     b.balance += 19.99 * amount                      # no transaction, no lock, no idempotency
-    # no audit record written at all                 # money moved invisibly (rule 6)
+    # no audit record written at all                 # money moved invisibly (FCS-AUDIT-001)
 ```
 
 **The red lines it crosses:** stores raw PAN and CVV (PCI-DSS, FCS-PAN-001);
-"hashes" a password with MD5 (rules 2 & 4); logs PAN, CVV, and SSN (rule 3); uses
+"hashes" a password with MD5 (FCS-SECRET-001/FCS-CRYPTO-001); logs PAN, CVV, and SSN (FCS-LOG-001); uses
 binary `float` for money (silent rounding errors); moves funds with no transaction, no
-row lock, no idempotency key, and **no audit record** (rule 6 — bypassing audit on
+row lock, no idempotency key, and **no audit record** (FCS-AUDIT-001 — bypassing audit on
 money movement). An agent asked to write this must **refuse** per
 [`refusal/refusal-policy.md`](../refusal/refusal-policy.md) and offer the compliant
 `handle_transfer` / tokenize-the-card pattern instead.

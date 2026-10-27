@@ -39,12 +39,12 @@ A SQL Server Audit has two parts: the **Server Audit object** (defines the *targ
 The audit records the **fact** of access (principal, object, statement), not the sensitive payload, so PAN/CVV/etc. do not land in the audit file by design — provided you audit at the object/statement-group level and do **not** enable payload-capturing traces. The masking obligations fall on anything else that could emit values:
 
 - **Never enable** a SQL Trace / Extended Events session that captures statement text or parameter values against tables holding PAN, CVV, passwords, tokens, or full national IDs in production. `rpc_completed`/`sql_batch_completed` with `batch_text`/`statement` will capture the literal values.
-- **Application-side logging** (Serilog etc.) is where values leak — mask there, at the point of capture, per [`languages/csharp-dotnet.md`](../languages/csharp-dotnet.md). PAN is masked to last-4 (`************1234`); CVV/PIN/password/token/private key are **dropped, never masked-then-logged** (refusal-policy rules 1 and 3).
+- **Application-side logging** (Serilog etc.) is where values leak — mask there, at the point of capture, per [`languages/csharp-dotnet.md`](../languages/csharp-dotnet.md). PAN is masked to last-4 (`************1234`); CVV/PIN/password/token/private key are **dropped, never masked-then-logged** (refusal-policy FCS-PAN-001/FCS-SAD-001/FCS-LOG-001).
 - **Dynamic Data Masking** is *not* a logging control and *not* an access control — see the warning in the Hashing & encryption section. Do not rely on it to keep values out of any sink.
 
 ### What is NEVER logged (even masked)
 
-CVV/CVC, full magnetic-track/chip data, PIN or PIN blocks, plaintext passwords, private keys, TDE/CMK key material, and raw session/refresh/bearer tokens. These are refusal-policy red lines (rules 1, 3, 4), not "mask-then-log" cases.
+CVV/CVC, full magnetic-track/chip data, PIN or PIN blocks, plaintext passwords, private keys, TDE/CMK key material, and raw session/refresh/bearer tokens. These are refusal-policy red lines (FCS-PAN-001/FCS-SAD-001/FCS-LOG-001), not "mask-then-log" cases.
 
 ### Log integrity — append-only / WORM / hash chain
 
@@ -242,7 +242,7 @@ END CATCH;
 ALTER TABLE dbo.CardOnFile
     ALTER COLUMN Pan ADD MASKED WITH (FUNCTION = 'partial(0,"XXXX",4)');  -- NOT encryption, NOT access control
 
--- ❌ Storing the PAN in cleartext and the CVV at all (refusal rules 1 & 4).
+-- ❌ Storing the PAN in cleartext and the CVV at all (refusal FCS-PAN-001/FCS-SAD-001).
 CREATE TABLE dbo.BadCard (
     Pan  VARCHAR(19) NOT NULL,          -- cleartext PAN
     Cvv  CHAR(3)     NOT NULL           -- CVV must NEVER be stored after authorization (PCI-DSS)
@@ -250,12 +250,12 @@ CREATE TABLE dbo.BadCard (
 
 -- ❌ "Encrypting" the PAN with an unkeyed fast hash — reversible by brute force over the small PAN
 --    keyspace, and non-compliant with PCI DSS v4.0.1 Req 3.5.1.1 (keyed hash mandatory since 2025-03-31).
-INSERT INTO dbo.BadCard (Pan) VALUES (CONVERT(VARCHAR(64), HASHBYTES('MD5', @pan), 2));  -- MD5 forbidden (rule 4)
+INSERT INTO dbo.BadCard (Pan) VALUES (CONVERT(VARCHAR(64), HASHBYTES('MD5', @pan), 2));  -- MD5 forbidden (FCS-CRYPTO-001)
 
 -- ❌ Audit that silently loses records instead of failing, and a DBA login that can rewrite history.
 CREATE SERVER AUDIT WeakAudit TO FILE (FILEPATH = 'C:\temp\')
-    WITH (ON_FAILURE = CONTINUE);       -- money moves even when it cannot be audited (rule 6)
+    WITH (ON_FAILURE = CONTINUE);       -- money moves even when it cannot be audited (FCS-AUDIT-001)
 GRANT UPDATE, DELETE ON dbo.MoneyMovementAudit TO app_login;  -- audit trail no longer append-only
 ```
 
-**Why it's wrong:** DDM gives a false sense of protection while the PAN sits in cleartext; the CVV is stored at all (PCI-DSS red line); `MD5`/unkeyed hashing is both broken crypto and PCI-noncompliant; `ON_FAILURE = CONTINUE` plus `UPDATE/DELETE` grants on the audit table let money move un-audited and let a DBA erase the trail — exactly what Ledger + `FAIL_OPERATION` + append-only grants exist to prevent. See [`refusal/refusal-policy.md`](../refusal/refusal-policy.md) rules 1, 3, 4, 6, 10.
+**Why it's wrong:** DDM gives a false sense of protection while the PAN sits in cleartext; the CVV is stored at all (PCI-DSS red line); `MD5`/unkeyed hashing is both broken crypto and PCI-noncompliant; `ON_FAILURE = CONTINUE` plus `UPDATE/DELETE` grants on the audit table let money move un-audited and let a DBA erase the trail — exactly what Ledger + `FAIL_OPERATION` + append-only grants exist to prevent. See [`refusal/refusal-policy.md`](../refusal/refusal-policy.md) FCS-PAN-001/FCS-SAD-001/FCS-LOG-001, 6, 10.

@@ -44,7 +44,7 @@ PAN, CVV, password, bearer/refresh tokens, API keys, full national ID, IBAN, and
 
 ### What is NEVER logged (even masked)
 
-CVV/CVC, full track data, PIN, plaintext passwords, private keys, and raw session/refresh tokens. These are refusal-policy red lines (rules 1, 3), not "mask-then-log" cases — drop them before they enter a `LogEvent`.
+CVV/CVC, full track data, PIN, plaintext passwords, private keys, and raw session/refresh tokens. These are refusal-policy red lines (FCS-PAN-001/FCS-SAD-001/FCS-LOG-001), not "mask-then-log" cases — drop them before they enter a `LogEvent`.
 
 ### Structured lib, redaction mechanism, log integrity
 
@@ -166,7 +166,7 @@ Use **ASP.NET Core Identity's `PasswordHasher<TUser>`** (`Microsoft.AspNetCore.I
 
 - **Preferred / stronger:** OWASP's primary recommendation is **Argon2id**. On .NET, use the **`Konscious.Security.Cryptography.Argon2`** library (there is no first-party Argon2 in the BCL). OWASP's current minimum configuration is **19 MiB memory, 2 iterations, 1 degree of parallelism** (tune upward to your latency budget). Store the algorithm + parameters alongside the hash so you can migrate.
 - **PBKDF2** remains acceptable and is the pragmatic default via `PasswordHasher<TUser>`; it is also the choice when **FIPS 140** validation is a hard requirement (Argon2 is not FIPS-approved). If you call PBKDF2 directly, use `Rfc2898DeriveBytes` / `KeyDerivation.Pbkdf2` with `HashAlgorithmName.SHA512` (matching Identity v3 on .NET 8) and an iteration count at or above the framework default (≥100,000 on .NET 8), and raise it over time.
-- **Forbidden (refusal rules 2, 4):** MD5, SHA1, plain SHA-256 "with a salt", any reversible encryption of a password, or a hardcoded/global salt.
+- **Forbidden (refusal FCS-SECRET-001/FCS-CRYPTO-001):** MD5, SHA1, plain SHA-256 "with a salt", any reversible encryption of a password, or a hardcoded/global salt.
 
 ### Encrypted two-way — PAN, IBAN, national ID
 
@@ -361,7 +361,7 @@ public async Task Transfer(string pan, string cvv, decimal amount, string passwo
     // ❌ plaintext password / reversible or broken hash — FCS-SECRET-001, FCS-CRYPTO-001
     user.PasswordHash = Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(password)));
 
-    // ❌ storing + logging PAN, storing CVV — refusal rules 1 & 3 (PCI-DSS)
+    // ❌ storing + logging PAN, storing CVV — refusal FCS-PAN-001/FCS-SAD-001/FCS-LOG-001 (PCI-DSS)
     _db.Cards.Add(new Card { Pan = pan, Cvv = cvv });
     _log.LogInformation($"charging card {pan} cvv {cvv} for {amount}"); // interpolated → no masking
 

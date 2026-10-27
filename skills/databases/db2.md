@@ -60,7 +60,7 @@ INSERT INTO SYSIBM.SYSAUDITPOLICIES
 
 **What is MASKED before a human or a low-privilege app sees it** — PAN (expose at most first 6 + last 4), national ID, IBAN, DOB, CVV (never — it must not be stored at all). Enforce display masking with an **RCAC column mask** (`CREATE MASK`, see Hashing & encryption), *not* by trusting the application to mask.
 
-**What is NEVER written to any audit trail, SMF record, trace, or diagnostic log:** CVV/CVC, full PAN, full track/PIN, plaintext passwords or verifier hashes, keystore passwords, Data Encryption Keys / Master Keys. Beware: the **`EXECUTE`** category (IFCID 145 on z/OS, `EXECUTE WITH DATA` on LUW) can capture **SQL statement text and host-variable/bind values** of audited statements — if a developer passes a PAN as a literal in a `WHERE` clause, it lands in the audit trail. Bind sensitive predicates as parameter markers and keep cleartext out of SQL literals. (Refusal rules 1, 3, 4.)
+**What is NEVER written to any audit trail, SMF record, trace, or diagnostic log:** CVV/CVC, full PAN, full track/PIN, plaintext passwords or verifier hashes, keystore passwords, Data Encryption Keys / Master Keys. Beware: the **`EXECUTE`** category (IFCID 145 on z/OS, `EXECUTE WITH DATA` on LUW) can capture **SQL statement text and host-variable/bind values** of audited statements — if a developer passes a PAN as a literal in a `WHERE` clause, it lands in the audit trail. Bind sensitive predicates as parameter markers and keep cleartext out of SQL literals. (Refusal FCS-PAN-001/FCS-SAD-001/FCS-LOG-001.)
 
 **Log integrity / append-only:**
 
@@ -134,7 +134,7 @@ SELECT DECRYPT_DATAKEY_BIGINT(PAN_ENC) FROM CORE.CARD WHERE ID = :id;     -- or 
 - **Do not design password storage in the database.** Db2 itself does not store application user passwords — authentication is delegated to **RACF** (z/OS) or the OS/LDAP plugin (LUW). You do not implement Db2's own credential store.
 - For *application* user passwords, hash in the **application tier** with **Argon2id** (OWASP: m ≥ 19 MiB, t = 2, p = 1), bcrypt as fallback — store only the resulting hash string in a column.
 - Db2's hashing built-ins (`HASH`, `HASH_MD5`, `HASH_SHA256`, `HASH_SHA512`) are for data integrity / partitioning, **not** passwords — SHA-2 is far too fast for password storage, and `HASH_MD5`/SHA-1 are broken for any security purpose.
-- **Forbidden (refusal rules 2, 4):** storing passwords reversibly; MD5/SHA-1 for integrity or passwords; DES/3DES or any weaker-than-AES-256 cipher for new data; AES-ECB; a fixed/reused IV; hardcoded keys or keystore passwords; home-rolled crypto; floating-point money.
+- **Forbidden (refusal FCS-SECRET-001/FCS-CRYPTO-001):** storing passwords reversibly; MD5/SHA-1 for integrity or passwords; DES/3DES or any weaker-than-AES-256 cipher for new data; AES-ECB; a fixed/reused IV; hardcoded keys or keystore passwords; home-rolled crypto; floating-point money.
 
 ### Access control above encryption (threat = an authorized-but-over-scoped user)
 
@@ -240,27 +240,27 @@ END;
 ```sql
 -- ❌ Every line crosses a red line — refuse to write this.
 CREATE TABLE CARD_BAD (
-  PAN  VARCHAR(19),          -- raw PAN, no encryption, no RCAC mask — rule 1
-  CVV  VARCHAR(4),           -- storing CVV — forbidden outright — rule 1
-  PWD  VARCHAR(32)           -- will hold an MD5 of the password — rules 2/4
+  PAN  VARCHAR(19),          -- raw PAN, no encryption, no RCAC mask — FCS-PAN-001/FCS-SAD-001
+  CVV  VARCHAR(4),           -- storing CVV — forbidden outright — FCS-PAN-001/FCS-SAD-001
+  PWD  VARCHAR(32)           -- will hold an MD5 of the password — FCS-SECRET-001/FCS-CRYPTO-001
 );
 
 CREATE PROCEDURE PAY_BAD (IN p_pan VARCHAR(19), IN p_cvv VARCHAR(4), IN p_amt DOUBLE)
   LANGUAGE SQL
 BEGIN
-  -- logs PAN + CVV to the diagnostic log / trace — rules 1, 3
+  -- logs PAN + CVV to the diagnostic log / trace — FCS-PAN-001/FCS-SAD-001/FCS-LOG-001
   CALL DBMS_OUTPUT.PUT_LINE('charging card ' || p_pan || ' cvv ' || p_cvv);
 
   INSERT INTO CARD_BAD(PAN, CVV, PWD)
-    VALUES (p_pan, p_cvv, HEX(HASH_MD5(:pw)));          -- MD5 password — rules 2, 4
+    VALUES (p_pan, p_cvv, HEX(HASH_MD5(:pw)));          -- MD5 password — FCS-SECRET-001/FCS-CRYPTO-001
 
   -- AES in ECB-equivalent mode with a hardcoded, reused key/password:
-  INSERT INTO CARD_BAD(PAN) VALUES (ENCRYPT_CHAR(p_pan, 'hardcoded-pw-123'));  -- weak + hardcoded — rules 4, 7
+  INSERT INTO CARD_BAD(PAN) VALUES (ENCRYPT_CHAR(p_pan, 'hardcoded-pw-123'));  -- weak + hardcoded — FCS-SECRET-002/FCS-CRYPTO-001
 
   UPDATE ACCOUNT SET BALANCE = BALANCE - p_amt WHERE ID = 1;   -- DOUBLE money + no lock -> lost update
-  UPDATE ACCOUNT SET BALANCE = BALANCE + p_amt WHERE ID = 2;   -- no idempotency, no audit — rule 6
+  UPDATE ACCOUNT SET BALANCE = BALANCE + p_amt WHERE ID = 2;   -- no idempotency, no audit — FCS-AUDIT-001
   COMMIT;
 END;
 ```
 
-Red lines crossed: storing/printing PAN & CVV (PCI-DSS, rules 1, 3), MD5 password (rules 2, 4), a weak password-based encrypt with a hardcoded key (rules 4, 7), `DOUBLE` for money (core), no `FOR UPDATE` lock (lost update), no idempotency key, no audit of money movement (rule 6). The compliant alternative is the *Good example* above: data-set / native encryption at rest, `ENCRYPT_DATAKEY` (ICSF key label) or app-tier AES-256-GCM with a KMS-held key for the column — or tokenize the card via the processor and store none of it — RCAC row permission + column mask for access, an `EXECUTE` audit policy to SMF/the audit log, and `DECIMAL` money with deterministic `FOR UPDATE` locking. See [`refusal/refusal-policy.md`](../refusal/refusal-policy.md) and [`global/pci-dss.md`](../global/pci-dss.md).
+Red lines crossed: storing/printing PAN & CVV (PCI-DSS, FCS-PAN-001/FCS-SAD-001/FCS-LOG-001), MD5 password (FCS-SECRET-001/FCS-CRYPTO-001), a weak password-based encrypt with a hardcoded key (FCS-SECRET-002/FCS-CRYPTO-001), `DOUBLE` for money (core), no `FOR UPDATE` lock (lost update), no idempotency key, no audit of money movement (FCS-AUDIT-001). The compliant alternative is the *Good example* above: data-set / native encryption at rest, `ENCRYPT_DATAKEY` (ICSF key label) or app-tier AES-256-GCM with a KMS-held key for the column — or tokenize the card via the processor and store none of it — RCAC row permission + column mask for access, an `EXECUTE` audit policy to SMF/the audit log, and `DECIMAL` money with deterministic `FOR UPDATE` locking. See [`refusal/refusal-policy.md`](../refusal/refusal-policy.md) and [`global/pci-dss.md`](../global/pci-dss.md).

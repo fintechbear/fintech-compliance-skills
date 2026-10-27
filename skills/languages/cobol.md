@@ -84,11 +84,11 @@ On the mainframe there are two execution contexts with **different integrity mac
 
 ## Hashing & encryption
 
-The rule is **all crypto goes through ICSF to the hardware (CPACF / Crypto Express), keyed by keys that never appear in the clear in your program.** Do not write a cipher in COBOL, and never embed a key constant in the load module (refusal rules 4, 7).
+The rule is **all crypto goes through ICSF to the hardware (CPACF / Crypto Express), keyed by keys that never appear in the clear in your program.** Do not write a cipher in COBOL, and never embed a key constant in the load module (refusal FCS-SECRET-002/FCS-CRYPTO-001).
 
 ### Hashed one-way (passwords, integrity hashes)
 
-- **User passwords are RACF's job, not the program's.** RACF stores password/phrase verifiers using **KDFAES** (key-derivation using AES, salted and iterated) when enabled via `SETROPTS PASSWORD(ALGORITHM(KDFAES))`. A COBOL program **authenticates by calling RACF** (`RACROUTE REQUEST=VERIFY`, or via the signed-on CICS/TSO userid) — it must **never** read, store, or hash a password itself. If you find a program storing or comparing passwords, that is a refusal-policy violation (rules 2, 3).
+- **User passwords are RACF's job, not the program's.** RACF stores password/phrase verifiers using **KDFAES** (key-derivation using AES, salted and iterated) when enabled via `SETROPTS PASSWORD(ALGORITHM(KDFAES))`. A COBOL program **authenticates by calling RACF** (`RACROUTE REQUEST=VERIFY`, or via the signed-on CICS/TSO userid) — it must **never** read, store, or hash a password itself. If you find a program storing or comparing passwords, that is a refusal-policy violation (FCS-SECRET-001/FCS-LOG-001).
 - **One-way hashes for data integrity / hash-chaining** use ICSF **One-Way Hash Generate** `CSNBOWH` with **SHA-256/384/512**. **Forbidden:** MD5, SHA-1 for integrity, and any home-grown "hash" built from `MOVE`/arithmetic (FCS-CRYPTO-001).
 
 ### Encrypted two-way (data you must recover: PAN*, IBAN, national ID)
@@ -140,7 +140,7 @@ Two layers, both AES-256, both hardware-accelerated by **CPACF** with keys prote
 
 **Key management:** master keys live in the **Crypto Express HSM**; operational keys live wrapped in the **CKDS** and are referenced by **label**. Access to key labels and ICSF services is RACF-controlled via **CSFKEYS** (per-key) and **CSFSERV** (per-service) classes — so "who can decrypt" is itself audited in SMF 80. Rotate keys by generating a new labelled key and re-enciphering (ICSF supports key rotation / re-wrap); support decrypting old-key data during the rollover.
 
-**Forbidden (FCS-CRYPTO-001, FCS-SECRET-002):** any cipher implemented in COBOL (reference-modification "scrambling", XOR, `MOVE`-based obfuscation); a key literal in the program or a copybook; a static/reused IV; AES-ECB for structured data; DES/3DES for new work; reading a clear key into `WORKING-STORAGE`; disabling TLS/AT-TLS for data in transit (rule 8). Use **AT-TLS** (policy-based TLS in the TCP/IP stack) or z/OS System SSL for sensitive transport — TLS 1.2+.
+**Forbidden (FCS-CRYPTO-001, FCS-SECRET-002):** any cipher implemented in COBOL (reference-modification "scrambling", XOR, `MOVE`-based obfuscation); a key literal in the program or a copybook; a static/reused IV; AES-ECB for structured data; DES/3DES for new work; reading a clear key into `WORKING-STORAGE`; disabling TLS/AT-TLS for data in transit (FCS-TLS-001). Use **AT-TLS** (policy-based TLS in the TCP/IP stack) or z/OS System SSL for sensitive transport — TLS 1.2+.
 
 ## Country differences (how the same COBOL/z/OS code changes)
 
@@ -246,26 +246,26 @@ RACF/SMF audits *who touched what*; the `AUDIT_LOG` row records *the business ac
        01  WS-PAN      PIC X(16).
        01  WS-CVV      PIC X(4).
        01  WS-PW       PIC X(20).
-       01  WS-KEY      PIC X(16) VALUE 'HARDCODEDSECRET1'.   *> key in source (rules 4,7)
+       01  WS-KEY      PIC X(16) VALUE 'HARDCODEDSECRET1'.   *> key in source (FCS-SECRET-002/FCS-CRYPTO-001)
        01  WS-AMOUNT   COMP-2.                               *> float money (core rule)
 
-           DISPLAY 'CHARGING PAN ' WS-PAN ' CVV ' WS-CVV.    *> logs PAN+CVV (rules 1,3)
+           DISPLAY 'CHARGING PAN ' WS-PAN ' CVV ' WS-CVV.    *> logs PAN+CVV (FCS-PAN-001/FCS-SAD-001/FCS-LOG-001)
 
            EXEC SQL INSERT INTO CARDS (PAN, CVV, PW)         *> stores CVV + plaintext pw
-                    VALUES (:WS-PAN, :WS-CVV, :WS-PW) END-EXEC  *> rules 1,2
+                    VALUES (:WS-PAN, :WS-CVV, :WS-PW) END-EXEC  *> FCS-PAN-001/FCS-SAD-001/FCS-SECRET-001
 
       * "encrypt" by XOR-ing with a constant key -- home-rolled crypto
            PERFORM VARYING I FROM 1 BY 1 UNTIL I > 16
                COMPUTE WS-ENC(I:1) =
-                   FUNCTION CHAR(... WS-PAN(I:1) ... WS-KEY(I:1))  *> rule 4
+                   FUNCTION CHAR(... WS-PAN(I:1) ... WS-KEY(I:1))  *> FCS-CRYPTO-001
            END-PERFORM
 
       * move money with no lock, no idempotency, no audit, no syncpoint
            EXEC SQL UPDATE ACCOUNT SET BALANCE = BALANCE - WS-AMOUNT
                     WHERE ACCT_ID = :WS-SRC END-EXEC           *> lost update
            EXEC SQL UPDATE ACCOUNT SET BALANCE = BALANCE + WS-AMOUNT
-                    WHERE ACCT_ID = :WS-DST END-EXEC           *> no audit (rule 6)
+                    WHERE ACCT_ID = :WS-DST END-EXEC           *> no audit (FCS-AUDIT-001)
            GOBACK.                                             *> no SYNCPOINT: partial post risk
 ```
 
-Red lines crossed: storing/logging PAN & CVV (PCI-DSS, rules 1, 3); storing a plaintext password (rule 2); hardcoded key + home-rolled XOR "crypto" instead of ICSF/CPACF (rules 4, 7); floating-point money (core rule); no lock → lost update; no idempotency → double-post on retry; no audit row on money movement (rule 6); no `SYNCPOINT` → a mid-transaction failure leaves the debit without the credit. The compliant alternative is the *Good example* above: delegate auth to RACF, crypto to ICSF/DFSMS, integrity to CICS syncpoint, and never let a secret reach storage, a report, a dump, or SMF in the clear. See [`refusal/refusal-policy.md`](../refusal/refusal-policy.md).
+Red lines crossed: storing/logging PAN & CVV (PCI-DSS, FCS-PAN-001/FCS-SAD-001/FCS-LOG-001); storing a plaintext password (FCS-SECRET-001); hardcoded key + home-rolled XOR "crypto" instead of ICSF/CPACF (FCS-SECRET-002/FCS-CRYPTO-001); floating-point money (core rule); no lock → lost update; no idempotency → double-post on retry; no audit row on money movement (FCS-AUDIT-001); no `SYNCPOINT` → a mid-transaction failure leaves the debit without the credit. The compliant alternative is the *Good example* above: delegate auth to RACF, crypto to ICSF/DFSMS, integrity to CICS syncpoint, and never let a secret reach storage, a report, a dump, or SMF in the clear. See [`refusal/refusal-policy.md`](../refusal/refusal-policy.md).
