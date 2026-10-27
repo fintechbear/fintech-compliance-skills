@@ -32,6 +32,8 @@ jobs:
         run: npm run verify
       - name: Test suite (real YAML, migration, atomicity, packed artifact)
         run: npm test
+      - name: Diagnose smoke (install then self-check reports current, exit 0)
+        run: node installer/test-diagnose.js
       - name: Package contents sanity
         run: npm pack --dry-run
 
@@ -82,3 +84,5 @@ jobs:
         run: node controls/validate-controls.js
       - name: Citation migration is idempotent (no drift)
         run: node controls/migrate-refusal-citations.js --check
+      - name: Install self-check (source side — FCS ids resolve, no legacy citations)
+        run: node installer/diagnose.js --home "$RUNNER_TEMP/no-install" --target "$RUNNER_TEMP/no-install"
