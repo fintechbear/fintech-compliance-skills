@@ -159,6 +159,46 @@ function isLegacyOutput(skill, fileText) {
   return !!known && known.includes(sha(fileText));
 }
 
+// Codex rule files are RAW skill bodies copied verbatim (no frontmatter) under
+// .fintech-compliance-skills/skills/. The previous installer (19b4f33) copied them but
+// wrote NO manifest, so a manifest-less file must be recognised another way. Table of
+// byte-exact raw-file hashes captured from the real old Codex installs (b742e893 +
+// 19b4f33), keyed by tree-relative path. Generated from OLD code, never current code.
+const CODEX_LEGACY_FILE_HASHES = {
+  'skills/INDEX.md': ['389913d564e7e325'],
+  'skills/core/secure-fintech-coding.md': ['55543a68d2a8288d'],
+  'skills/databases/db2.md': ['b5cccf679f263119'],
+  'skills/databases/mongodb.md': ['6c74671527fd22b9'],
+  'skills/databases/mysql-mariadb.md': ['47867f38d1a51119'],
+  'skills/databases/oracle.md': ['0bb4da72f41907cb'],
+  'skills/databases/postgresql.md': ['13c0a2f6cfa22089'],
+  'skills/databases/redis.md': ['c309bb9595bc53a3'],
+  'skills/databases/sql-server.md': ['d98b84cfbed526bf'],
+  'skills/global/aml-kyc.md': ['63e93c68b75fc64d'],
+  'skills/global/iso27001-soc2.md': ['903cac0a74048c59'],
+  'skills/global/pci-dss.md': ['1a6e08140472dfa9'],
+  'skills/languages/cobol.md': ['631b88b471eec7ad'],
+  'skills/languages/csharp-dotnet.md': ['8c728b9a89a4fffa'],
+  'skills/languages/go.md': ['98154188165b14de'],
+  'skills/languages/java.md': ['a50417b9090b6464'],
+  'skills/languages/javascript-typescript.md': ['dc56406a2c1c6cc4'],
+  'skills/languages/kotlin.md': ['c1fc1de8cb184150'],
+  'skills/languages/plsql.md': ['6c97c6479062a0f3'],
+  'skills/languages/python.md': ['191ce475af82862d'],
+  'skills/languages/rust.md': ['1bbfc85696994e58'],
+  'skills/languages/scala.md': ['2177f25495886f05'],
+  'skills/refusal/refusal-policy.md': ['4ce321e33a98c874'],
+  'skills/regional/eu-gdpr-psd2-dora.md': ['b29d798cad525c86'],
+  'skills/regional/turkey-kvkk-bddk-masak.md': ['23a656efcd167760'],
+  'skills/regional/uk-fca-gdpr.md': ['bf49e9ded74a76bd'],
+  'skills/regional/us-sox-glba-ccpa.md': ['633e8f0e61a2a655'],
+};
+// Is this on-disk Codex rule file an UNEDITED copy from a previous installer?
+function isLegacyCodexFile(relKey, fileText) {
+  const known = CODEX_LEGACY_FILE_HASHES[relKey];
+  return !!known && known.includes(sha(fileText));
+}
+
 // ---------- fs helpers ----------
 
 function expandHome(p, home) {
@@ -277,23 +317,30 @@ function buildCodexBlock(skills, relRoot) {
 
 function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
+// The fixed closing line of the OLD generated Codex block (both historical variants end
+// their blockquote note with this phrase). The generated section is heading -> ... ->
+// the LAST line of the closing blockquote run that contains this phrase. User prose that
+// merely mentions `skills/...` sits OUTSIDE that run and is preserved (G2).
+const LEGACY_CODEX_CLOSING = 'follow its Do / Never / examples';
+
 // Replace our managed block; also strip any legacy appended sections so old broken
 // skills/... references do not linger. Preserves ALL user text outside those regions.
 //
-// F01: a legacy generated section is bounded PRECISELY. The old installer's block is
-// always: [optional "<!-- marker -->"] heading + fixed intro + "## Group" subheadings +
-// a bullet list whose items reference `skills/...`. Its content ALWAYS ends on the LAST
-// line that references `skills/`. So we remove from the heading (or its preceding marker)
-// up to and including that last `skills/`-referencing line, and KEEP everything after it
-// verbatim (that is user text).
+// G2: a legacy generated section is bounded by its KNOWN STRUCTURE — the generated heading,
+// then everything through the closing blockquote note (`> ... follow its Do / Never /
+// examples ...`). We do NOT guess the end from "the last line that mentions skills/",
+// because user instructions legitimately reference skills/ paths too. If a heading is found
+// but no closing blockquote note follows it (shape we don't recognise), we DO NOT delete to
+// EOF — we leave that heading in place and report it, rather than destroying user text.
 function mergeCodexBlock(existing, block) {
   let out = existing;
+  let ambiguous = false;
 
-  // 1. Remove every one of OUR managed blocks (handles duplicates).
+  // 1. Remove every one of OUR managed blocks (handles duplicates) — these are marker-delimited.
   const managedRe = new RegExp(`\\n*${escapeRe(BLOCK_START)}[\\s\\S]*?${escapeRe(BLOCK_END)}\\n*`, 'g');
   out = out.replace(managedRe, '\n');
 
-  // 2. Remove every LEGACY generated section with a precise boundary.
+  // 2. Remove every LEGACY (marker-less) generated section by its structural boundary.
   const lines = out.split('\n');
   const kept = [];
   for (let i = 0; i < lines.length; i++) {
@@ -307,9 +354,9 @@ function mergeCodexBlock(existing, block) {
     }
     if (headingIdx === -1) { kept.push(line); continue; }
 
-    // scan forward for the LAST `skills/`-referencing line of THIS generated section,
-    // stopping at the next legacy heading / section-heading marker.
-    let lastSkillsRef = headingIdx;
+    // Find the end: the closing blockquote run that contains LEGACY_CODEX_CLOSING, bounded
+    // by the next legacy heading (defensive) so one section cannot swallow the next.
+    let closeIdx = -1;
     for (let j = headingIdx + 1; j < lines.length; j++) {
       const t = lines[j];
       if (t.startsWith(LEGACY_CODEX_HEADING)) break;
@@ -317,14 +364,26 @@ function mergeCodexBlock(existing, block) {
         let k = j + 1; while (k < lines.length && lines[k].trim() === '') k++;
         if (k < lines.length && lines[k].startsWith(LEGACY_CODEX_HEADING)) break;
       }
-      if (/skills\//.test(t)) lastSkillsRef = j;
+      if (t.startsWith('>') && t.includes(LEGACY_CODEX_CLOSING)) {
+        closeIdx = j;
+        // extend across any further contiguous blockquote lines (the note is 1-2 lines)
+        while (closeIdx + 1 < lines.length && lines[closeIdx + 1].startsWith('>')) closeIdx++;
+        break;
+      }
     }
-    i = lastSkillsRef; // drop [current .. lastSkillsRef]; outer ++ resumes after it (user text)
+    if (closeIdx === -1) {
+      // Unrecognised shape: do NOT delete to EOF. Keep the line verbatim and flag ambiguity.
+      ambiguous = true;
+      kept.push(line);
+      continue;
+    }
+    i = closeIdx; // drop [heading-or-marker .. closeIdx]; outer ++ resumes after it (user text)
   }
 
   out = kept.join('\n').replace(/\s*$/, '');
   out = (out ? out + '\n\n' : '') + `${block}\n`;
-  return out.replace(/\n{3,}/g, '\n\n');
+  out = out.replace(/\n{3,}/g, '\n\n');
+  return ambiguous ? { text: out, ambiguous: true } : out;
 }
 
 function installCodex(targetDir, skills, { force }) {
@@ -332,26 +391,40 @@ function installCodex(targetDir, skills, { force }) {
   const treeDst = path.join(targetDir, CODEX_ROOT);
   const skillsDst = path.join(treeDst, 'skills');
   const manifestPath = path.join(treeDst, CODEX_MANIFEST);
-  // F02: tolerate a missing/old/garbage manifest. Old manifests used `core/file.md` keys
-  // (no leading skills/). Normalise any such legacy key to the single `skills/...` contract
-  // so our own files are never mistaken for unknown user files.
+
+  // Manifest schema v2: { version:2, managed:{relKey:hash}, userEdited:{relKey:hash} }.
+  // `managed` = hash of the package baseline we last wrote. `userEdited` = hash of a file
+  // the user changed, which we are preserving (G1: an edit is NEVER recorded as a managed
+  // baseline, or the next run would think it is unchanged package content and overwrite it).
+  // Tolerate every older shape: a flat {relKey:hash} map, and prefix-less keys (`core/x.md`).
   const rawPrev = (() => { try { return JSON.parse(readIf(manifestPath) || '{}'); } catch { return {}; } })();
-  const prevManifest = {};
-  for (const [k, v] of Object.entries(rawPrev)) {
-    const key = k.startsWith('skills/') ? k : (/^(core|refusal|global|regional|languages|databases)\//.test(k) ? `skills/${k}` : k);
-    prevManifest[key] = v;
+  const prevManaged = {};
+  const prevUserEdited = {};
+  const normKey = (k) => (k.startsWith('skills/') ? k
+    : /^(core|refusal|global|regional|languages|databases)\//.test(k) ? `skills/${k}`
+    : k === 'INDEX.md' ? 'skills/INDEX.md' : k);
+  if (rawPrev && typeof rawPrev === 'object' && rawPrev.version >= 2) {
+    for (const [k, v] of Object.entries(rawPrev.managed || {})) prevManaged[normKey(k)] = v;
+    for (const [k, v] of Object.entries(rawPrev.userEdited || {})) prevUserEdited[normKey(k)] = v;
+  } else {
+    // legacy flat map: treat every entry as a managed baseline
+    for (const [k, v] of Object.entries(rawPrev || {})) {
+      if (typeof v === 'string') prevManaged[normKey(k)] = v;
+    }
   }
 
-  // Stage the new tree in a uniquely-named temp dir; validate; then swap. Preserve unknown user files.
+  // Stage the new tree in a uniquely-named temp dir; validate; then swap. Preserve unknown + edited files.
   const stage = scratchName(treeDst, 'stage');
   fs.rmSync(stage, { recursive: true, force: true });
-  const manifest = {};
+  const managed = {};       // relKey -> hash of the package baseline we are writing now
+  const userEdited = {};     // relKey -> hash of a preserved user edit
   let backup = null;
+  let agentsTmp = null;
+  let rollbackFailed = false;
   try {
-    copyTree(SKILLS_DIR, path.join(stage, 'skills'), manifest);
+    copyTree(SKILLS_DIR, path.join(stage, 'skills'), managed);
     const skipped = [];
     if (fs.existsSync(treeDst)) {
-      // Carry over unknown user files; refuse to clobber a managed file the user edited.
       const walkPrev = (dir, rel) => {
         for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
           const abs = path.join(dir, e.name);
@@ -359,37 +432,73 @@ function installCodex(targetDir, skills, { force }) {
           if (r === CODEX_MANIFEST) continue;
           if (e.isDirectory()) { walkPrev(abs, r); continue; }
           const relKey = r; // tree-relative, includes leading skills/ for rule files
-          const wasManaged = Object.prototype.hasOwnProperty.call(prevManifest, relKey);
           const cur = sha(fs.readFileSync(abs, 'utf8'));
-          if (!wasManaged) {
-            const d = path.join(stage, r); mkdirp(path.dirname(d)); fs.copyFileSync(abs, d); // unknown user file -> preserve
-          } else if (!force && cur !== prevManifest[relKey] && manifest[relKey] !== cur) {
-            // managed file the user edited (differs from installed AND from new content) -> preserve + skip
-            const d = path.join(stage, r); mkdirp(path.dirname(d)); fs.copyFileSync(abs, d);
-            manifest[relKey] = cur; // keep ownership so a future run still tracks it
-            skipped.push(relKey);
+          const pkgNow = managed[relKey]; // hash of the fresh package file for this path (if any)
+          const preserveTo = () => { const d = path.join(stage, r); mkdirp(path.dirname(d)); fs.copyFileSync(abs, d); };
+
+          if (pkgNow === undefined) {
+            // not a package path at all -> unknown user file -> always preserve (even under --force)
+            preserveTo();
+            continue;
           }
-          // else: managed + unchanged (or --force) -> the fresh staged copy wins.
+          if (force) {
+            // explicit overwrite: the fresh package copy already staged wins; nothing to carry.
+            continue;
+          }
+          const wasManaged = Object.prototype.hasOwnProperty.call(prevManaged, relKey);
+          const wasUserEdited = Object.prototype.hasOwnProperty.call(prevUserEdited, relKey);
+          if (cur === pkgNow) {
+            continue; // already equals the new package content -> staged copy wins, no-op
+          }
+          if (wasManaged && cur === prevManaged[relKey]) {
+            continue; // unchanged managed file from a prior run -> upgrade to new package (staged wins)
+          }
+          if (!wasManaged && !wasUserEdited && isLegacyCodexFile(relKey, fs.readFileSync(abs, 'utf8'))) {
+            continue; // G3: unedited file from a manifest-less OLD install -> upgrade to new package
+          }
+          if (wasUserEdited && cur === prevUserEdited[relKey]) {
+            // G1: still the same user edit we preserved before -> keep preserving, re-record as userEdited
+            preserveTo(); userEdited[relKey] = cur; skipped.push(relKey);
+            continue;
+          }
+          // genuine user edit (differs from package, from the managed baseline, and is not a known legacy file)
+          preserveTo(); userEdited[relKey] = cur; skipped.push(relKey);
         }
       };
       walkPrev(treeDst, '');
     }
-    fs.writeFileSync(path.join(stage, CODEX_MANIFEST), JSON.stringify(manifest, null, 2), 'utf8');
+    // staged `managed` still holds hashes for files that ended up preserved as user edits;
+    // move those out of managed so the schema is accurate.
+    for (const k of Object.keys(userEdited)) delete managed[k];
+    const manifestOut = { version: 2, managed, userEdited };
+    fs.writeFileSync(path.join(stage, CODEX_MANIFEST), JSON.stringify(manifestOut, null, 2), 'utf8');
 
-    // AGENTS.md merge (compute before swapping so a failure here leaves tree untouched).
+    // AGENTS.md merge (compute before swapping so a failure here leaves the tree untouched).
     const block = buildCodexBlock(skills, CODEX_ROOT);
     const dest = path.join(targetDir, 'AGENTS.md');
     const existing = readIf(dest);
-    const agentsOut = existing == null ? block + '\n' : mergeCodexBlock(existing, block);
+    let agentsOut, agentsAmbiguous = false;
+    if (existing == null) {
+      agentsOut = block + '\n';
+    } else {
+      const merged = mergeCodexBlock(existing, block);
+      if (typeof merged === 'string') { agentsOut = merged; }
+      else { agentsOut = merged.text; agentsAmbiguous = merged.ambiguous; } // G2: unrecognised legacy shape left in place
+    }
 
-    // F01: back up an existing AGENTS.md (never overwrite a prior backup).
+    // Back up an existing AGENTS.md (never overwrite a prior backup).
     if (existing != null) {
       const agentsBak = dest + '.bak';
       if (!fs.existsSync(agentsBak)) fs.writeFileSync(agentsBak, existing, 'utf8');
     }
 
-    // commit: swap tree, then write AGENTS.md. F03: keep the tree backup until BOTH succeed,
-    // so a failure writing AGENTS.md rolls the tree back too.
+    // G4: stage AGENTS.md to a unique temp file on the SAME directory, then atomically rename.
+    // A crash mid-write hits only the temp file; the active AGENTS.md is never truncated in place.
+    agentsTmp = scratchName(dest, 'tmp');
+    fs.writeFileSync(agentsTmp, agentsOut, 'utf8');
+
+    // commit: swap tree, then rename AGENTS.md into place. Keep the tree backup until BOTH
+    // the tree swap AND the AGENTS.md rename succeed (F03), so any failure rolls back cleanly.
     if (fs.existsSync(treeDst)) {
       backup = scratchName(treeDst, 'old');
       fs.rmSync(backup, { recursive: true, force: true });
@@ -397,18 +506,31 @@ function installCodex(targetDir, skills, { force }) {
     }
     try {
       fs.renameSync(stage, treeDst);
-      fs.writeFileSync(dest, agentsOut, 'utf8'); // if THIS throws, catch restores the tree
+      fs.renameSync(agentsTmp, dest); // atomic replace on the same volume; no partial active file
+      agentsTmp = null;               // consumed
     } catch (e) {
+      try { if (agentsTmp) { fs.rmSync(agentsTmp, { force: true }); agentsTmp = null; } } catch { /* best effort */ }
       fs.rmSync(treeDst, { recursive: true, force: true });
-      if (backup && fs.existsSync(backup)) fs.renameSync(backup, treeDst); // rollback tree
-      backup = null;
+      if (backup && fs.existsSync(backup)) {
+        try {
+          fs.renameSync(backup, treeDst); // rollback tree
+          backup = null;
+        } catch (rollbackErr) {
+          // G4-E: rollback itself failed. DO NOT delete the backup — it is the only recovery
+          // data left. Leave it on disk and surface a clear error naming where it is.
+          rollbackFailed = true;
+          const err = new Error(`${e.message}; rollback also failed (${rollbackErr.message}); recovery copy kept at ${backup}`);
+          throw err;
+        }
+      }
       throw e;
     }
     if (backup) { fs.rmSync(backup, { recursive: true, force: true }); backup = null; }
-    return { where: skillsDst, skipped };
+    return { where: skillsDst, skipped, ambiguous: agentsAmbiguous };
   } finally {
     fs.rmSync(stage, { recursive: true, force: true });
-    if (backup) fs.rmSync(backup, { recursive: true, force: true });
+    if (agentsTmp) { try { fs.rmSync(agentsTmp, { force: true }); } catch { /* best effort */ } }
+    if (backup && !rollbackFailed) fs.rmSync(backup, { recursive: true, force: true });
   }
 }
 
@@ -487,10 +609,11 @@ Targets:
   scope = scope ? String(scope) : undefined;
 
   if (tool === 'codex') {
-    const { where, skipped } = installCodex(target, skills, { force });
+    const { where, skipped, ambiguous } = installCodex(target, skills, { force });
     const missing = assertCodexInventory(where, skills);
     console.log(`\n✅ codex: AGENTS.md updated and ${skills.length} rule files installed -> ${where}`);
     if (skipped.length) console.log(`⚠️  preserved ${skipped.length} edited managed file(s) (use --force): ${skipped.join(', ')}`);
+    if (ambiguous) console.log(`⚠️  conflict: an existing "# AGENTS.md — Fintech Compliance Rules" section did not match a known old format, so it was left in place (not migrated). Review AGENTS.md and remove the stale section by hand if needed.`);
     if (missing.length) { console.error(`✗ inventory check failed, missing: ${missing.join(', ')}`); process.exit(1); }
     console.log('   Codex reads AGENTS.md automatically at session start.');
   } else {
@@ -513,7 +636,7 @@ if (require.main === module) {
 }
 
 module.exports = {
-  resolveBase, classify, isLegacyOutput, managedContent, mergeCodexBlock, rewriteRelativeLinks,
+  resolveBase, classify, isLegacyOutput, isLegacyCodexFile, managedContent, mergeCodexBlock, rewriteRelativeLinks,
   listSkillFiles, installCodex, installSkillDir, LEGACY_FILE_HASHES,
   BLOCK_START, BLOCK_END, LEGACY_CODEX_MARKER, LEGACY_CODEX_HEADING, CODEX_ROOT, CODEX_MANIFEST,
 };

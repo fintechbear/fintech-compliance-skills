@@ -207,33 +207,35 @@ test('F05b. legacy section WITH preceding user text: user text byte-preserved, r
 
 test('F05c. DUPLICATE legacy sections collapse to one managed block', () => {
   const t = tmp();
+  // Use the REAL old Codex block (it ends with the known closing blockquote note), duplicated.
+  const realBlock = fs.readFileSync(path.join(FIX, 'pr5', 'codex', 'AGENTS.md'), 'utf8').replace(/\s*$/, '');
   const legacy = '# Notes\n\nKeep.\n\n' +
-    '<!-- fintech-compliance-skills -->\n# AGENTS.md — Fintech Compliance Rules\n\n- `skills/core/secure-fintech-coding.md` — baseline\n' +
-    '\n<!-- fintech-compliance-skills -->\n# AGENTS.md — Fintech Compliance Rules\n\n- `skills/refusal/refusal-policy.md` — limits\n';
+    '<!-- fintech-compliance-skills -->\n' + realBlock + '\n\n' +
+    '<!-- fintech-compliance-skills -->\n' + realBlock + '\n';
   fs.writeFileSync(path.join(t, 'AGENTS.md'), legacy, 'utf8');
   run(['--tool', 'codex', '--target', t, '--home', t]);
   const after = fs.readFileSync(path.join(t, 'AGENTS.md'), 'utf8');
   assert.ok(after.includes('Keep.'), 'user text preserved');
   assert.equal((after.match(/BEGIN fintech-compliance-skills/g) || []).length, 1, 'one managed block');
   assert.ok(!after.includes('<!-- fintech-compliance-skills -->'), 'legacy markers gone');
-  assert.ok(!/`skills\/core\//.test(after) && !/`skills\/refusal\//.test(after), 'old refs gone');
+  assert.ok(!/live in this repo under `skills\/`/.test(after), 'old generated section gone');
   fs.rmSync(t, { recursive: true, force: true });
 });
 
 // F01: user text AFTER the legacy section must survive
 test('F01. user instructions AFTER a legacy Codex section are byte-preserved', () => {
   const t = tmp();
+  const realBlock = fs.readFileSync(path.join(FIX, 'pr5', 'codex', 'AGENTS.md'), 'utf8').replace(/\s*$/, '');
   const before = '# Team rules\n\nAlways lint.\n\n';
-  const legacySection = '<!-- fintech-compliance-skills -->\n# AGENTS.md — Fintech Compliance Rules\n\nYou write code for regulated financial systems.\n\n- `skills/core/secure-fintech-coding.md` — baseline\n- `skills/refusal/refusal-policy.md` — limits\n';
-  const after = '\n## My deployment checklist\n\n1. Run tests.\n2. Tag release.\n\nNEVER delete this section.\n';
-  fs.writeFileSync(path.join(t, 'AGENTS.md'), before + legacySection + after, 'utf8');
+  const after = '\n\n## My deployment checklist\n\n1. Run tests.\n2. Tag release.\n\nNEVER delete this section.\n';
+  fs.writeFileSync(path.join(t, 'AGENTS.md'), before + realBlock + after, 'utf8');
   run(['--tool', 'codex', '--target', t, '--home', t]);
   const result = fs.readFileSync(path.join(t, 'AGENTS.md'), 'utf8');
   assert.ok(result.includes('Always lint.'), 'user text before preserved');
   assert.ok(result.includes('## My deployment checklist'), 'user heading after preserved');
   assert.ok(result.includes('NEVER delete this section.'), 'user text after the legacy block preserved (F01)');
   assert.ok(result.includes('1. Run tests.') && result.includes('2. Tag release.'), 'user list after preserved');
-  assert.ok(!/`skills\/core\/secure-fintech-coding\.md`/.test(result), 'old refs removed');
+  assert.ok(!/live in this repo under `skills\/`/.test(result), 'old generated section removed');
   assert.equal((result.match(/BEGIN fintech-compliance-skills/g) || []).length, 1);
   fs.rmSync(t, { recursive: true, force: true });
 });
@@ -332,7 +334,7 @@ test('11. unknown user files under the Codex dir are preserved across re-install
 // F03: rollback at the AGENTS.md WRITE stage (not the read stage)
 // ---------------------------------------------------------------------------
 
-test('F03. a failure WRITING AGENTS.md rolls the tree back to the previous install', () => {
+test('F03. a failure renaming AGENTS.md into place rolls the tree back to the previous install', () => {
   const t = tmp();
   run(['--tool', 'codex', '--target', t, '--home', t]); // v1
   const treeRoot = path.join(t, '.fintech-compliance-skills');
@@ -340,51 +342,42 @@ test('F03. a failure WRITING AGENTS.md rolls the tree back to the previous insta
   const v1Core = fs.readFileSync(coreFile, 'utf8');
   const v1Agents = fs.readFileSync(path.join(t, 'AGENTS.md'), 'utf8');
 
-  // Inject a failure at the WRITE stage by calling installCodex with AGENTS.md as a directory.
-  // (The READ succeeds — existing is null for a dir? no: readIf reads a file; a dir makes readFileSync throw.
-  //  To target the WRITE specifically, we make AGENTS.md writable-read but un-writable: replace it with a dir
-  //  AFTER read by monkey-patching is overkill; instead drive the library fn and fail the final write.)
-  // Simplest deterministic write-stage failure: make the AGENTS.md path a directory. readIf() will throw EISDIR
-  // on read — that's a READ failure, which the task says doesn't prove write rollback. So instead we make the
-  // PARENT write fail: pre-create AGENTS.md as a dir ONLY affects read. We therefore test via the API with a
-  // stubbed fs.writeFileSync that throws only for AGENTS.md.
-  const realWrite = fs.writeFileSync;
+  // AGENTS.md is written to a temp file then atomically renamed into place. Inject a failure
+  // at that final RENAME (temp -> AGENTS.md), which is the real commit step.
+  const realRename = fs.renameSync;
   let threw = false;
-  fs.writeFileSync = function (p, ...rest) {
-    if (typeof p === 'string' && p.endsWith('AGENTS.md')) { threw = true; throw new Error('INJECTED write failure'); }
-    return realWrite.call(fs, p, ...rest);
+  fs.renameSync = function (a, b, ...rest) {
+    if (typeof b === 'string' && b.endsWith('AGENTS.md')) { threw = true; throw new Error('INJECTED rename failure'); }
+    return realRename.call(fs, a, b, ...rest);
   };
   try {
-    assert.throws(() => api.installCodex(t, api.listSkillFiles(), { force: false }), /INJECTED write failure/);
+    assert.throws(() => api.installCodex(t, api.listSkillFiles(), { force: false }), /INJECTED rename failure/);
   } finally {
-    fs.writeFileSync = realWrite;
+    fs.renameSync = realRename;
   }
-  assert.ok(threw, 'failure was injected at the AGENTS.md write');
-  // tree rolled back to v1 (not left as the half-swapped new tree)
+  assert.ok(threw, 'failure was injected at the AGENTS.md rename');
   assert.ok(fs.existsSync(coreFile), 'rule tree still present after failed update');
   assert.equal(fs.readFileSync(coreFile, 'utf8'), v1Core, 'rule tree is the previous good version');
-  assert.equal(fs.readFileSync(path.join(t, 'AGENTS.md'), 'utf8'), v1Agents, 'AGENTS.md unchanged after failed write');
-  // no orphan staging/backup dirs left behind
-  const leftovers = fs.readdirSync(t).filter((n) => /\.fcs-(stage|old)-/.test(n));
-  assert.deepEqual(leftovers, [], 'no orphan staging/backup dirs');
+  assert.equal(fs.readFileSync(path.join(t, 'AGENTS.md'), 'utf8'), v1Agents, 'AGENTS.md unchanged (no partial active file)');
+  const leftovers = fs.readdirSync(t).filter((n) => /\.fcs-(tmp|stage|old)-/.test(n));
+  assert.deepEqual(leftovers, [], 'no orphan temp/staging/backup dirs');
   fs.rmSync(t, { recursive: true, force: true });
 });
 
-test('F03b. first-ever install failing at AGENTS.md write leaves no partial tree claimed as success', () => {
+test('F03b. first-ever install failing at AGENTS.md rename leaves no partial tree claimed as success', () => {
   const t = tmp();
-  const realWrite = fs.writeFileSync;
-  fs.writeFileSync = function (p, ...rest) {
-    if (typeof p === 'string' && p.endsWith('AGENTS.md')) throw new Error('INJECTED');
-    return realWrite.call(fs, p, ...rest);
+  const realRename = fs.renameSync;
+  fs.renameSync = function (a, b, ...rest) {
+    if (typeof b === 'string' && b.endsWith('AGENTS.md')) throw new Error('INJECTED');
+    return realRename.call(fs, a, b, ...rest);
   };
   try {
     assert.throws(() => api.installCodex(t, api.listSkillFiles(), { force: false }), /INJECTED/);
-  } finally { fs.writeFileSync = realWrite; }
+  } finally { fs.renameSync = realRename; }
   // On first install there was no previous tree to roll back to; the tree must not be left as a "success".
-  // Either there is no AGENTS.md (write failed) — and the tree, if present, is not accompanied by a valid AGENTS.md.
   assert.ok(!fs.existsSync(path.join(t, 'AGENTS.md')), 'no AGENTS.md written on failed first install');
-  const leftovers = fs.existsSync(t) ? fs.readdirSync(t).filter((n) => /\.fcs-(stage|old)-/.test(n)) : [];
-  assert.deepEqual(leftovers, [], 'no orphan staging/backup dirs');
+  const leftovers = fs.existsSync(t) ? fs.readdirSync(t).filter((n) => /\.fcs-(tmp|stage|old)-/.test(n)) : [];
+  assert.deepEqual(leftovers, [], 'no orphan temp/staging/backup dirs');
   fs.rmSync(t, { recursive: true, force: true });
 });
 
@@ -470,4 +463,169 @@ test('16. packed npm artifact installs + re-installs correctly', () => {
   const out2 = execFileSync(process.execPath, [pkgInstaller, '--tool', 'claude', '--target', dest, '--home', dest], { stdio: 'pipe' }).toString();
   assert.match(out2, /0 new, 0 migrated/, 're-install from tarball is idempotent');
   fs.rmSync(t, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// G1-G4: second-round regressions (deeper Codex migration + atomic AGENTS.md write)
+// ---------------------------------------------------------------------------
+// G1: user edit deleted on the SECOND re-install (not the first)
+test('G1: edited managed Codex file survives repeated re-installs', () => {
+  const t = tmp();
+  run(['--tool', 'codex', '--target', t, '--home', t]);
+  const f = path.join(t, '.fintech-compliance-skills', 'skills', 'refusal', 'refusal-policy.md');
+  fs.appendFileSync(f, '\n<!-- MY OVERRIDE -->\n');
+  const edited = fs.readFileSync(f, 'utf8');
+  run(['--tool', 'codex', '--target', t, '--home', t]); // re-install #1
+  assert.equal(fs.readFileSync(f, 'utf8'), edited, 'edit survives re-install #1');
+  run(['--tool', 'codex', '--target', t, '--home', t]); // re-install #2 (bug deletes here)
+  assert.equal(fs.readFileSync(f, 'utf8'), edited, 'edit survives re-install #2');
+  run(['--tool', 'codex', '--target', t, '--home', t]); // re-install #3
+  assert.equal(fs.readFileSync(f, 'utf8'), edited, 'edit survives re-install #3');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+// G2: user text that itself references skills/ after a legacy section is preserved
+test('G2: user text referencing skills/ after a legacy Codex section is preserved', () => {
+  const t = tmp();
+  const legacyAgents = fs.readFileSync(path.join(FIX, 'pr5', 'codex', 'AGENTS.md'), 'utf8');
+  const userAfter = '\n\n# TEAM RULES AFTER\nAlways read skills/team-policy.md before editing.\nAlso see .fintech-compliance-skills/notes.md\n';
+  fs.writeFileSync(path.join(t, 'AGENTS.md'), legacyAgents + userAfter, 'utf8');
+  run(['--tool', 'codex', '--target', t, '--home', t]);
+  const after = fs.readFileSync(path.join(t, 'AGENTS.md'), 'utf8');
+  assert.ok(after.includes('# TEAM RULES AFTER'), 'user heading preserved');
+  assert.ok(after.includes('Always read skills/team-policy.md before editing.'), 'user skills/ ref preserved');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+// G3: real 19b4f33 Codex install (rule tree present, NO manifest) must UPGRADE to current source
+test('G3: manifest-less old Codex rule files upgrade to current source (not left stale)', () => {
+  const t = tmp();
+  // lay down the real pr6 Codex rule tree with NO manifest (exactly what 19b4f33 produced)
+  const treeSrc = path.join(FIX, 'pr6', 'codex', 'skills');
+  const treeDst = path.join(t, '.fintech-compliance-skills', 'skills');
+  fs.mkdirSync(path.dirname(treeDst), { recursive: true });
+  fs.cpSync(treeSrc, treeDst, { recursive: true });
+  fs.writeFileSync(path.join(t, 'AGENTS.md'), fs.readFileSync(path.join(FIX, 'pr6', 'codex', 'AGENTS.md'), 'utf8'), 'utf8');
+  run(['--tool', 'codex', '--target', t, '--home', t]);
+  // the 6 critical modules must now be byte-identical to the CURRENT repo source
+  for (const rel of ['databases/postgresql.md', 'global/pci-dss.md', 'languages/csharp-dotnet.md', 'refusal/refusal-policy.md', 'regional/eu-gdpr-psd2-dora.md', 'regional/turkey-kvkk-bddk-masak.md']) {
+    const installed = fs.readFileSync(path.join(treeDst, rel), 'utf8');
+    const source = fs.readFileSync(path.join(path.resolve(__dirname, '..'), 'skills', rel), 'utf8');
+    assert.equal(installed, source, `${rel} upgraded to current source`);
+  }
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+// G4: a failure at ANY write/commit stage must not leave a corrupt active AGENTS.md.
+// The fix stages AGENTS.md to a temp file then atomically renames, so we inject at the
+// temp-write, the rename, and the tree-commit stages, plus first-install, plus a
+// rollback-time failure — and in every case assert the active file stays consistent.
+test('G4: partial/failed AGENTS.md write never corrupts the active file (all stages)', () => {
+  const realWrite = fs.writeFileSync;
+  const realRename = fs.renameSync;
+
+  // --- A. failure WHILE writing the temp AGENTS file (partial bytes land in the TEMP file) ---
+  {
+    const t = tmp();
+    run(['--tool', 'codex', '--target', t, '--home', t]); // v1
+    const dest = path.join(t, 'AGENTS.md');
+    const v1 = fs.readFileSync(dest, 'utf8');
+    fs.writeFileSync = function (p, data, ...rest) {
+      if (typeof p === 'string' && /AGENTS\.md\.fcs-tmp-/.test(p)) {
+        realWrite.call(fs, p, String(data).slice(0, 40), ...rest); // partial content into TEMP only
+        throw new Error('INJECTED temp-write');
+      }
+      return realWrite.call(fs, p, data, ...rest);
+    };
+    try { assert.throws(() => api.installCodex(t, api.listSkillFiles(), { force: false }), /INJECTED temp-write/); }
+    finally { fs.writeFileSync = realWrite; }
+    assert.equal(fs.readFileSync(dest, 'utf8'), v1, 'A: active AGENTS.md unchanged (partial landed only in temp)');
+    assert.deepEqual(fs.readdirSync(t).filter((n) => /\.fcs-(tmp|stage|old)-/.test(n)), [], 'A: no orphan temp/stage/old');
+    fs.rmSync(t, { recursive: true, force: true });
+  }
+
+  // --- B. failure at the AGENTS.md RENAME (temp fully written, rename throws) ---
+  {
+    const t = tmp();
+    run(['--tool', 'codex', '--target', t, '--home', t]);
+    const dest = path.join(t, 'AGENTS.md');
+    const v1 = fs.readFileSync(dest, 'utf8');
+    const treeFile = path.join(t, '.fintech-compliance-skills', 'skills', 'core', 'secure-fintech-coding.md');
+    const v1Tree = fs.readFileSync(treeFile, 'utf8');
+    fs.renameSync = function (a, b, ...rest) {
+      if (typeof b === 'string' && b.endsWith('AGENTS.md')) throw new Error('INJECTED rename');
+      return realRename.call(fs, a, b, ...rest);
+    };
+    try { assert.throws(() => api.installCodex(t, api.listSkillFiles(), { force: false }), /INJECTED rename/); }
+    finally { fs.renameSync = realRename; }
+    assert.equal(fs.readFileSync(dest, 'utf8'), v1, 'B: active AGENTS.md still the previous good content');
+    assert.equal(fs.readFileSync(treeFile, 'utf8'), v1Tree, 'B: rule tree rolled back to previous');
+    assert.deepEqual(fs.readdirSync(t).filter((n) => /\.fcs-(tmp|stage|old)-/.test(n)), [], 'B: no orphan temp/stage/old');
+    fs.rmSync(t, { recursive: true, force: true });
+  }
+
+  // --- C. failure at the TREE commit (rename of the staged tree) ---
+  {
+    const t = tmp();
+    run(['--tool', 'codex', '--target', t, '--home', t]);
+    const dest = path.join(t, 'AGENTS.md');
+    const v1 = fs.readFileSync(dest, 'utf8');
+    const treeFile = path.join(t, '.fintech-compliance-skills', 'skills', 'core', 'secure-fintech-coding.md');
+    const v1Tree = fs.readFileSync(treeFile, 'utf8');
+    fs.renameSync = function (a, b, ...rest) {
+      // target ONLY the forward tree swap (staging dir -> .fintech-compliance-skills),
+      // not the rollback (backup -> tree), so rollback can still restore the previous tree.
+      if (typeof b === 'string' && b.endsWith('.fintech-compliance-skills') && typeof a === 'string' && /\.fcs-stage-/.test(a)) {
+        throw new Error('INJECTED tree-commit');
+      }
+      return realRename.call(fs, a, b, ...rest);
+    };
+    try { assert.throws(() => api.installCodex(t, api.listSkillFiles(), { force: false }), /INJECTED tree-commit/); }
+    finally { fs.renameSync = realRename; }
+    assert.equal(fs.readFileSync(dest, 'utf8'), v1, 'C: active AGENTS.md unchanged');
+    assert.equal(fs.readFileSync(treeFile, 'utf8'), v1Tree, 'C: rule tree unchanged');
+    assert.deepEqual(fs.readdirSync(t).filter((n) => /\.fcs-(tmp|stage|old)-/.test(n)), [], 'C: no orphan temp/stage/old');
+    fs.rmSync(t, { recursive: true, force: true });
+  }
+
+  // --- D. FIRST install failing at the AGENTS rename: no AGENTS.md left, no false success ---
+  {
+    const t = tmp();
+    fs.renameSync = function (a, b, ...rest) {
+      if (typeof b === 'string' && b.endsWith('AGENTS.md')) throw new Error('INJECTED first-install');
+      return realRename.call(fs, a, b, ...rest);
+    };
+    try { assert.throws(() => api.installCodex(t, api.listSkillFiles(), { force: false }), /INJECTED first-install/); }
+    finally { fs.renameSync = realRename; }
+    assert.ok(!fs.existsSync(path.join(t, 'AGENTS.md')), 'D: no AGENTS.md written on failed first install');
+    assert.deepEqual(fs.existsSync(t) ? fs.readdirSync(t).filter((n) => /\.fcs-(tmp|stage|old)-/.test(n)) : [], [], 'D: no orphan temp/stage/old');
+    fs.rmSync(t, { recursive: true, force: true });
+  }
+
+  // --- E. failure DURING rollback must not delete recovery data; it must surface an error ---
+  {
+    const t = tmp();
+    run(['--tool', 'codex', '--target', t, '--home', t]);
+    const treeFile = path.join(t, '.fintech-compliance-skills', 'skills', 'core', 'secure-fintech-coding.md');
+    const v1Tree = fs.readFileSync(treeFile, 'utf8');
+    let stage = 0;
+    fs.renameSync = function (a, b, ...rest) {
+      if (typeof b === 'string' && b.endsWith('AGENTS.md')) throw new Error('INJECTED commit'); // trigger rollback
+      // during rollback the backup dir is renamed back onto the tree; fail that ONCE
+      if (typeof b === 'string' && b.endsWith('.fintech-compliance-skills') && typeof a === 'string' && /\.fcs-old-/.test(a) && stage++ === 0) {
+        throw new Error('INJECTED rollback');
+      }
+      return realRename.call(fs, a, b, ...rest);
+    };
+    let caught;
+    try { api.installCodex(t, api.listSkillFiles(), { force: false }); }
+    catch (e) { caught = e; }
+    finally { fs.renameSync = realRename; }
+    assert.ok(caught, 'E: an error was surfaced (no silent success)');
+    // recovery data (the .fcs-old backup holding v1 tree) must still exist on disk
+    const backups = fs.readdirSync(t).filter((n) => /\.fcs-old-/.test(n));
+    assert.ok(backups.length === 1, 'E: the backup (recovery data) was NOT deleted');
+    assert.equal(fs.readFileSync(path.join(t, backups[0], 'skills', 'core', 'secure-fintech-coding.md'), 'utf8'), v1Tree, 'E: backup still holds the previous good tree');
+    fs.rmSync(t, { recursive: true, force: true });
+  }
 });
