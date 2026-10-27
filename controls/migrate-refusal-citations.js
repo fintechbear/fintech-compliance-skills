@@ -36,9 +36,12 @@ for (const e of map.entries) {
   let text = fs.readFileSync(abs, 'utf8');
   const re = oldRegex(e.old);
   const replacement = fcsPhrase(e.fcs);
+  const fcsIds = e.fcs.split('/').map((s) => s.trim());
   if (!re.test(text)) {
-    // Already migrated? check for the fcs id presence near nothing — report if the old text is simply gone.
-    if (text.includes(replacement)) { continue; } // idempotent: already done
+    // Idempotent: the old numbered citation is gone. Treat as already-migrated if
+    // every FCS id for this entry is present somewhere in the file (regardless of the
+    // exact surrounding phrasing, which may have been hand-edited).
+    if (fcsIds.every((id) => text.includes(id))) { continue; }
     console.error(`NO MATCH for "${e.old}" in ${e.file} (meaning: ${e.meaning})`);
     missing++;
     continue;
