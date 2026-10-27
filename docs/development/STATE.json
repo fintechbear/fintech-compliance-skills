@@ -26,7 +26,7 @@
   "capabilities": {
     "installer_test": "available",
     "reference_runtime_test": "available (Docker + .NET 10 + PostgreSQL 16)",
-    "real_agent_eval": "windows_cli_present_auth_unconfirmed"
+    "real_agent_eval": "codex usable (bounded); claude low-credit; smoke PASS; full eval deferred to P08"
   },
   "environments": {
     "windows_host": {
@@ -80,12 +80,20 @@
     },
     {
       "id": "P02",
-      "status": "TODO",
+      "status": "PARTIAL",
       "depends_on": [
         "P00"
       ],
-      "evidence": [],
-      "blockers": []
+      "evidence": [
+        "evals/ schema+40 tasks+grader(self-test 8/8)+codex adapter(self-test 5/5)+CURRENT_BASELINE.json(27 files)",
+        "real 3-task smoke (codex): T016 PASS refusal, T026 NOT_RUN timeout, T036 NEEDS_REVIEW",
+        "docs/development/P02.md"
+      ],
+      "blockers": [
+        "full 40x3 scored eval NOT_RUN (account limits + config-isolation prerequisite)",
+        "Claude runtime BLOCKED (low credit)",
+        "config isolation vs global CLI config NEEDS_REVIEW before scored run"
+      ]
     },
     {
       "id": "P03",

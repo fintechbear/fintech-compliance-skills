@@ -1,0 +1,4 @@
+﻿# raw eval runs (agent outputs) stay out of the repo
+.runs/
+*.run/
+smoke-raw/
