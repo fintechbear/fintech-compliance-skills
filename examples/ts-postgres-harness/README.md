@@ -35,6 +35,10 @@ bash run.sh
 `run.sh` is location-independent, picks a free loopback port, runs `npm ci` then the
 suite, propagates the harness exit code, and removes only its own container.
 
+On a host with Docker but **no system Node** (e.g. the Debian test box), use
+`run-in-docker.sh` instead — it runs the harness inside a `node:20` container on the
+host network against the same loopback-only postgres:16.
+
 To point at an existing database instead, set `PGCONN` and run `npm ci && npm start`.
 
 ## Scenarios
