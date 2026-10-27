@@ -5,11 +5,23 @@
   "base_branch": "installer-content-hardening",
   "base_is_pr7_unmerged": true,
   "frozen_reference_commit": "6fc6e9be03f85cd743b99bc7ca1c7a3ca9d2b601",
-  "validated_commit": "6fc6e9be03f85cd743b99bc7ca1c7a3ca9d2b601",
+  "validated_commit": "c248fb68a7e36e77927bb0c338dc0638b1529254",
   "inventory": {
     "skill_modules_excl_index": 26,
-    "by_group": { "core": 1, "refusal": 1, "global": 3, "regional": 4, "languages": 10, "databases": 7 },
-    "distribution_targets": ["claude", "kiro", "kiro-crew", "codex"]
+    "by_group": {
+      "core": 1,
+      "refusal": 1,
+      "global": 3,
+      "regional": 4,
+      "languages": 10,
+      "databases": 7
+    },
+    "distribution_targets": [
+      "claude",
+      "kiro",
+      "kiro-crew",
+      "codex"
+    ]
   },
   "capabilities": {
     "installer_test": "available",
@@ -17,21 +29,129 @@
     "real_agent_eval": "windows_cli_present_auth_unconfirmed"
   },
   "environments": {
-    "windows_host": { "node": "v24.14.1", "npm": "11.12.1", "dotnet": "10.0.203", "agents": ["claude", "codex", "kiro"] },
-    "debian_test_alias": { "os": "Debian 13 (trixie)", "arch": "x86_64", "docker": "29.8.1", "dotnet": "10.0.401", "system_node": "none", "agents": "none", "prior_workspace": "present" }
+    "windows_host": {
+      "node": "v24.14.1",
+      "npm": "11.12.1",
+      "dotnet": "10.0.203",
+      "agents": [
+        "claude",
+        "codex",
+        "kiro"
+      ]
+    },
+    "debian_test_alias": {
+      "os": "Debian 13 (trixie)",
+      "arch": "x86_64",
+      "docker": "29.8.1",
+      "dotnet": "10.0.401",
+      "system_node": "none",
+      "agents": "none",
+      "prior_workspace": "present"
+    }
   },
   "phases": [
-    { "id": "P00", "status": "PASS", "depends_on": [], "validated_commit": "6fc6e9be03f85cd743b99bc7ca1c7a3ca9d2b601",
-      "evidence": ["docs/development/WORK_CONTRACT.md", "docs/development/PLAN.md", "baseline verify+test 27/27 on Windows node v24.14.1"],
-      "blockers": [] },
-    { "id": "P01", "status": "TODO", "depends_on": ["P00"], "evidence": [], "blockers": [] },
-    { "id": "P02", "status": "TODO", "depends_on": ["P00"], "evidence": [], "blockers": [] },
-    { "id": "P03", "status": "TODO", "depends_on": ["P02"], "evidence": [], "blockers": [] },
-    { "id": "P04", "status": "TODO", "depends_on": ["P03"], "evidence": [], "blockers": [] },
-    { "id": "P05", "status": "TODO", "depends_on": ["P04"], "evidence": [], "blockers": [] },
-    { "id": "P06", "status": "TODO", "depends_on": ["P05"], "evidence": [], "blockers": [] },
-    { "id": "P07", "status": "TODO", "depends_on": ["P06"], "evidence": [], "blockers": [] },
-    { "id": "P08", "status": "TODO", "depends_on": ["P01", "P02", "P03", "P04", "P05", "P06", "P07"], "evidence": [], "blockers": [] }
+    {
+      "id": "P00",
+      "status": "PASS",
+      "depends_on": [],
+      "validated_commit": "6fc6e9be03f85cd743b99bc7ca1c7a3ca9d2b601",
+      "evidence": [
+        "docs/development/WORK_CONTRACT.md",
+        "docs/development/PLAN.md",
+        "baseline verify+test 27/27 on Windows node v24.14.1"
+      ],
+      "blockers": []
+    },
+    {
+      "id": "P01",
+      "status": "PASS",
+      "depends_on": [
+        "P00"
+      ],
+      "evidence": [
+        "docs/development/P01.md",
+        "debian: installer 27/27, shell-fault 4/4, harness 25/25 (real PostgreSQL 16.15)"
+      ],
+      "blockers": [
+        "npm publish / OIDC account config (manual, out-of-band)",
+        "exact OIDC min version NEEDS_REVIEW (mitigated by Node 24 + runtime assert)"
+      ],
+      "validated_commit": "c248fb68a7e36e77927bb0c338dc0638b1529254"
+    },
+    {
+      "id": "P02",
+      "status": "TODO",
+      "depends_on": [
+        "P00"
+      ],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P03",
+      "status": "TODO",
+      "depends_on": [
+        "P02"
+      ],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P04",
+      "status": "TODO",
+      "depends_on": [
+        "P03"
+      ],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P05",
+      "status": "TODO",
+      "depends_on": [
+        "P04"
+      ],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P06",
+      "status": "TODO",
+      "depends_on": [
+        "P05"
+      ],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P07",
+      "status": "TODO",
+      "depends_on": [
+        "P06"
+      ],
+      "evidence": [],
+      "blockers": []
+    },
+    {
+      "id": "P08",
+      "status": "TODO",
+      "depends_on": [
+        "P01",
+        "P02",
+        "P03",
+        "P04",
+        "P05",
+        "P06",
+        "P07"
+      ],
+      "evidence": [],
+      "blockers": []
+    }
   ],
-  "baseline_tests": { "installer_verify": "PASS", "installer_test": "27/27 PASS", "ran_on": "windows", "node": "v24.14.1" }
+  "baseline_tests": {
+    "installer_verify": "PASS",
+    "installer_test": "27/27 PASS",
+    "ran_on": "windows",
+    "node": "v24.14.1"
+  }
 }

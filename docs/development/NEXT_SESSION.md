@@ -15,19 +15,20 @@
   container; **no system Node** (use `node:NN` containers), **no agent CLI**.
 - Private connection details are NOT in the repo; they were provided out of band.
 
-## Next phase: P01
+## Next phase: P02
 
-Harness reliability + failure-injection tests + CI/publish prep. Reproduce (if still
-present on the current code) and fix:
-- A: `run.sh` hard-coded `~/fcs-test-run/harness` path (must run from its own location).
-- B: `dotnet run` exit code masked by echo/tail (script can return 0 on harness failure).
-- C: atomicity test only checks a successful transfer's rows.
-- D: concurrent-debit assertion can pass with zero successful transactions.
-Then: real-DB rollback + post-commit-retry injection, control-flow fault tests (dotnet/
-docker/readiness), add a real PostgreSQL+.NET CI job and Node 22/24 legs, verify npm OIDC
-runtime requirements (Node >=22.14.0 / npm >=11.5.1 as of 2026-10-27), pack+verify the
-artifact once. Leave `npm publish`/OIDC account config as an explicit BLOCKED.
+P01 is PASS (commit c248fb6): harness hardened (findings A-D fixed), real-DB rollback +
+post-commit-retry tests, shell control-flow fault test, CI real-PostgreSQL job + Node 24,
+publish.yml OIDC runtime. Debian: installer 27/27, shell-fault 4/4, harness 25/25.
+BLOCKED: npm publish / OIDC account config (manual). See docs/development/P01.md.
 
+P02 = real-agent evaluation infrastructure + frozen CURRENT_BASELINE (content hashes of
+6fc6e9b). Build evals/ (40 tasks: 15 valid / 10 dangerous / 10 scope-ambiguity / 5
+off-topic), split dev vs hidden-regression, three conditions (WITHOUT_SKILLS /
+CURRENT_BASELINE / CANDIDATE), separated graders, isolation test (HOME alone may not stop
+global CLI config — verify against the real CLI). Windows has claude/codex/kiro CLIs
+(auth unconfirmed): attempt a 3-task smoke; if no usable runtime, mark the real eval
+BLOCKED (never mock). 
 ## How to run things
 
 - Installer tests: `npm ci && node installer/verify.js && node --test installer/test.js`.
