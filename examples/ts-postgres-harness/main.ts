@@ -122,7 +122,7 @@ async function main() {
 
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail) { console.log('failures:\n' + failures.map((f) => '  - ' + f).join('\n')); }
-  await pool.end();
+  pool.end().catch(() => {});
   process.exit(fail ? 1 : 0);
 }
 
