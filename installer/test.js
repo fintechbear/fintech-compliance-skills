@@ -47,6 +47,17 @@ function legacyFixture(version, skillName) {
 function haveFixtures() {
   try { return fs.existsSync(path.join(FIX, 'pr5', 'claude', 'java.SKILL.md')); } catch { return false; }
 }
+// Skill names that EXIST in a historical fixture set. New skills added after that
+// fixture was captured are intentionally absent — a legacy install never contained
+// them, so an upgrade test must not expect them from the old bytes. This replaces
+// hard-coded "26" counts with a meaningful, fixture-derived inventory.
+function legacyFixtureNames(version) {
+  const dir = path.join(FIX, version, 'claude');
+  return fs.readdirSync(dir)
+    .filter((f) => f.endsWith('.SKILL.md'))
+    .map((f) => f.replace(/\.SKILL\.md$/, ''))
+    .sort();
+}
 
 // ---------------------------------------------------------------------------
 // clean installs
@@ -129,18 +140,19 @@ test('5+6. user edit preserved without --force; overwritten with --force', () =>
 // F04: real historical Claude migration (fixtures from old code)
 // ---------------------------------------------------------------------------
 
-test('F04. unedited PR#5 install: ALL 26 upgrade, incl. the 6 content-changed files, none skipped', { skip: haveFixtures() ? false : 'no fixtures' }, () => {
+test('F04. unedited PR#5 install: ALL legacy files upgrade, incl. the content-changed ones, none skipped', { skip: haveFixtures() ? false : 'no fixtures' }, () => {
   const t = tmp();
   const base = path.join(t, '.claude', 'skills');
-  // lay down the EXACT bytes the old PR#5 installer wrote
-  for (const s of api.listSkillFiles()) {
-    const dir = path.join(base, s.name); fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'SKILL.md'), legacyFixture('pr5', s.name), 'utf8');
+  const legacyNames = legacyFixtureNames('pr5');
+  // lay down the EXACT bytes the old PR#5 installer wrote (only the files it actually had)
+  for (const name of legacyNames) {
+    const dir = path.join(base, name); fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), legacyFixture('pr5', name), 'utf8');
   }
   const out = run(['--tool', 'claude', '--target', t, '--home', t]);
   assert.doesNotMatch(out, /skipped \d+ user-edited/, 'no unedited legacy file treated as a user edit');
-  assert.match(out, /26 migrated/, 'all 26 migrated');
-  // the 6 files whose repo CONTENT changed since the old install must still upgrade
+  assert.match(out, new RegExp(`${legacyNames.length} migrated`), `all ${legacyNames.length} legacy files migrated`);
+  // the files whose repo CONTENT changed since the old install must still upgrade
   for (const name of ['postgresql', 'pci-dss', 'csharp-dotnet', 'refusal-policy', 'eu-gdpr-psd2-dora', 'turkey-kvkk-bddk-masak']) {
     const f = path.join(base, name, 'SKILL.md');
     assert.ok(fs.readFileSync(f, 'utf8').includes('fcs-managed-hash:'), `${name} upgraded to new format`);
@@ -157,11 +169,11 @@ test('F04b. a genuinely user-EDITED PR#5 file is preserved (byte-exact), not mig
   const dir = path.join(base, 'java'); fs.mkdirSync(dir, { recursive: true });
   const edited = legacyFixture('pr5', 'java') + '\n<!-- MY TEAM NOTE -->\n';
   fs.writeFileSync(path.join(dir, 'SKILL.md'), edited, 'utf8');
-  // the other 25 are pristine legacy
-  for (const s of api.listSkillFiles()) {
-    if (s.name === 'java') continue;
-    const d = path.join(base, s.name); fs.mkdirSync(d, { recursive: true });
-    fs.writeFileSync(path.join(d, 'SKILL.md'), legacyFixture('pr5', s.name), 'utf8');
+  // the other legacy files are pristine
+  for (const name of legacyFixtureNames('pr5')) {
+    if (name === 'java') continue;
+    const d = path.join(base, name); fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, 'SKILL.md'), legacyFixture('pr5', name), 'utf8');
   }
   const out = run(['--tool', 'claude', '--target', t, '--home', t]);
   assert.match(out, /skipped 1 user-edited file\(s\).*java/);
