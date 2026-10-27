@@ -177,12 +177,23 @@
     },
     {
       "id": "P07",
-      "status": "TODO",
+      "status": "PASS",
       "depends_on": [
         "P06"
       ],
-      "evidence": [],
-      "blockers": []
+      "evidence": [
+        "installer/diagnose.js (zero-dep install self-check; reuses index.js classify/resolveBase/listSkillFiles)",
+        "checks: which targets installed + per-skill current/ours-stale/user/legacy/absent + source FCS-id resolution + no legacy citations",
+        "installer/test-diagnose.js 9/9 (clean=current exit0; injected ours-stale drift exit!=0; empty home not-installed exit0)",
+        "CI wiring: control-catalog source-diagnose step + installer matrix diagnose smoke (ubuntu+windows x node 18/20/22/24)",
+        "doctor bin + npm run diagnose + published in files; README 'Check your install (doctor)' with not-a-scanner framing",
+        "docs/development/P07.md",
+        "CI run (dbb52c8) success: control-catalog + 8 installer legs + harness"
+      ],
+      "blockers": [
+        "static integrity check only, NOT a runtime compliance audit / scanner (by design, stated on every run)"
+      ],
+      "validated_commit": "dbb52c8"
     },
     {
       "id": "P08",
