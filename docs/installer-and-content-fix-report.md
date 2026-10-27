@@ -202,6 +202,16 @@ G1–G4 (**27 tests**) and corrects an installer bug the prior round's tests did
 a managed Codex edit was still lost on the *second* re-install, and the old Codex
 migration (G2/G3) and AGENTS.md write (G4) were not as safe as the prior report implied.
 
+## Update — executed on a real Debian server (see docs/local-debian-test-report.md)
+
+The `npm ci` + `verify` + `test` matrix was later run for real on the user's Debian 13
+server (hostname `fintechbear-test-linux`) in Docker on Node 18/20/22 — **27/27 pass on
+all three**, `overall_exit=0` — and the previously-"not compiled" .NET example's RULES
+were moved into an executable harness (`examples/dotnet-postgres-harness/`) and run
+against a **real PostgreSQL 16.15** database: **23/23 pass**. This supersedes the earlier
+"not compiled / not executed" caveats for those two items. The packaged `.tgz` was built
+and installed from on the server (sha256 `e6ebd758…`). Live agent-session evaluation
+(Section 7) remains not-run (no agent CLI on that server).
 ## Remaining blockers
 
 - **CI result for the final branch head (G1-G4 code is in `1d5f500`; this doc commit sits on top) must be confirmed on GitHub Actions**
