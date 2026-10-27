@@ -279,6 +279,82 @@
       "skill_refs": ["skills/core/fintech-ledger-reconciliation.md"],
       "test_refs": ["examples/ts-postgres-harness/ledger.ts"],
       "limitations": "Detects and classifies; remediation is a reviewed operational decision, not an automatic money movement."
+    },
+
+    {
+      "id": "FCS-REFUND-001",
+      "statement": "A refund is bounded by its SOURCE payment: it reverses a specific captured payment, within the same (tenant, provider) scope, and the running sum of refunds against that payment never exceeds the captured amount. Partial refunds accumulate against the one payment; concurrent refunds are serialized so the cap cannot be raced past. A refund posts as a reversal in the ledger, never by editing the original.",
+      "applicability": "Any refund of a previously captured payment.",
+      "control_type": "preventive",
+      "source_refs": [
+        { "kind": "engineering_recommendation", "label": "Refund bounded by source capture; serialized cap enforcement", "url": null, "verified": true }
+      ],
+      "source_version": null, "effective_date": null, "reviewed_at": null,
+      "review_status": "needs_review",
+      "owner_role": "engineering",
+      "skill_refs": ["skills/core/fintech-refund-cancel.md"],
+      "test_refs": ["examples/ts-postgres-harness/refund.ts"],
+      "limitations": "States the money bound and serialization; the provider's own partial-refund API shape is provider-specific."
+    },
+    {
+      "id": "FCS-REFUNDTERM-001",
+      "statement": "cancel, void, reversal and refund are DISTINCT operations tied to the payment lifecycle stage, not interchangeable synonyms: cancel/void applies before capture (no money moved yet), reversal and refund apply after capture (money returns). Which ones exist, and what each is called, is provider-specific; never auto-substitute one for another or assume all four exist.",
+      "applicability": "Any code choosing how to undo or return a payment.",
+      "control_type": "preventive",
+      "source_refs": [
+        { "kind": "engineering_recommendation", "label": "Lifecycle-correct undo operation; provider-specific terms", "url": null, "verified": true }
+      ],
+      "source_version": null, "effective_date": null, "reviewed_at": null,
+      "review_status": "needs_review",
+      "owner_role": "engineering",
+      "skill_refs": ["skills/core/fintech-refund-cancel.md"],
+      "test_refs": ["examples/ts-postgres-harness/refund.ts"],
+      "limitations": "Names the lifecycle distinction; the exact operation set and naming must come from the specific provider's docs."
+    },
+    {
+      "id": "FCS-RETAIN-001",
+      "statement": "Retention is decided per DATA CATEGORY by its legal basis, not globally: mandatory financial/transaction records must be kept for a required minimum; data under an active legal hold must not be deleted even if otherwise erasable; profile/marketing data with no retention obligation is erasable on request. A single blanket retention or deletion rule across all categories is wrong.",
+      "applicability": "Any data lifecycle, retention schedule, or deletion/erasure feature.",
+      "control_type": "preventive",
+      "source_refs": [
+        { "kind": "law", "label": "Record-keeping minimums vs erasure rights (jurisdiction-specific; e.g. AML record retention vs GDPR/KVKK erasure)", "url": null, "verified": false }
+      ],
+      "source_version": null, "effective_date": null, "reviewed_at": null,
+      "review_status": "needs_review",
+      "owner_role": "compliance",
+      "skill_refs": ["skills/core/fintech-retention-erasure.md"],
+      "test_refs": ["examples/ts-postgres-harness/retention.ts"],
+      "limitations": "Concrete durations are jurisdiction-specific and are DEMO values in the reference, not cited regulation; the category-based reasoning is the control."
+    },
+    {
+      "id": "FCS-ERASE-001",
+      "statement": "Over-retention (keeping erasable data past its basis) and over-deletion (erasing data still under a retention obligation or legal hold) are BOTH failures and are checked separately. Crypto-shredding (destroying the key) is an engineering technique, not a universal legal guarantee that the data is 'erased' for every regulator; do not claim it satisfies an erasure duty by itself.",
+      "applicability": "Any erasure, anonymization, or crypto-shredding implementation.",
+      "control_type": "detective",
+      "source_refs": [
+        { "kind": "engineering_recommendation", "label": "Separate over-retention and over-deletion checks; crypto-shredding is not a blanket legal erasure", "url": null, "verified": true }
+      ],
+      "source_version": null, "effective_date": null, "reviewed_at": null,
+      "review_status": "needs_review",
+      "owner_role": "compliance",
+      "skill_refs": ["skills/core/fintech-retention-erasure.md"],
+      "test_refs": ["examples/ts-postgres-harness/retention.ts"],
+      "limitations": "Whether crypto-shredding is accepted as erasure is jurisdiction- and regulator-specific; this control forbids presenting it as a universal guarantee."
+    },
+    {
+      "id": "FCS-PRREVIEW-001",
+      "statement": "A financial-code review reports per-finding: the FCS control id, file and line, the trigger (what matched), evidence (the actual snippet/reason), a confidence level, and the review's own limits (what it did not or could not check). It reviews the CHANGED risk surface, not only added lines. It never emits an unverified finding as fact and never produces an automatic numeric 'compliance score'; qualitative judgement is NEEDS_REVIEW, not a pass.",
+      "applicability": "Any automated or assisted review of financial/payment code changes.",
+      "control_type": "detective",
+      "source_refs": [
+        { "kind": "engineering_recommendation", "label": "Evidence-bearing per-finding review; no false-precision score", "url": null, "verified": true }
+      ],
+      "source_version": null, "effective_date": null, "reviewed_at": null,
+      "review_status": "needs_review",
+      "owner_role": "engineering",
+      "skill_refs": ["skills/core/fintech-pr-review.md"],
+      "test_refs": [],
+      "limitations": "This is a review discipline, not a scanner: it structures findings and marks uncertainty; it does not certify compliance."
     }
   ]
 }

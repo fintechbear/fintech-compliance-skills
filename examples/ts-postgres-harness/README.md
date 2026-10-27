@@ -1,10 +1,11 @@
-# TypeScript + PostgreSQL transfer reference
+# TypeScript + PostgreSQL fintech reference
 
-A **narrow, runnable reference** for the `fintech-transfer` control contract, in
-TypeScript (Node + `pg`) against a **real PostgreSQL 16**. It is the sibling of
-`../dotnet-postgres-harness/`: both prove the same invariants, so the contract is not
-tied to one language. **This is not a product SDK** and not a framework — it exists to
-make the invariants executable.
+A **narrow, runnable reference** for the fintech control contracts (transfer, provider/
+webhook, ledger/reconciliation, refund/cancel, retention/erasure), in TypeScript
+(Node + `pg`) against a **real PostgreSQL 16**. It is the sibling of
+`../dotnet-postgres-harness/`: both prove the same transfer invariants, so the contract
+is not tied to one language. **This is not a product SDK**, not a framework, and **not a
+compliance scanner** — it exists to make the invariants executable.
 
 ## What it enforces (by FCS id)
 
@@ -48,3 +49,20 @@ To point at an existing database instead, set `PGCONN` and run `npm ci && npm st
 competing debits never overdraw and at least one succeeds), insufficient funds, atomic
 rollback on an injected pre-commit fault, and post-commit-retry. Fault injection lives
 only in the test surface (`Faults` in `bank.ts`), never on a production path.
+
+`npm start` chains five suites, each a separate process against the same PostgreSQL:
+
+- `main.ts` — transfer (above).
+- `webhook.ts` — provider/webhook: durable outbox before the call, outbound idempotency,
+  raw-body signature verify, deduplicated inbox, unknown-outcome state machine. The
+  provider is a labelled **test double**, not a real sandbox.
+- `ledger.ts` — append-only double-entry ledger + reconciliation (detective only).
+- `refund.ts` — refund/cancel: refund bounded by its source capture, partials accumulate,
+  **concurrent refunds serialized** so the cap is never raced past, cancel/void vs
+  reversal/refund by lifecycle stage, unknown-outcome never double-refunds, tenant scope.
+- `retention.ts` — retention/erasure **per data category by legal basis**: mandatory
+  financial retention vs active legal hold vs erasable profile data; over-retention and
+  over-deletion checked **separately**; crypto-shredding recorded as a technique, never
+  claimed as a universal legal erasure. **Durations are DEMO values, not cited regulation.**
+
+Run a single suite with e.g. `npm run refund` or `npm run retention`.
