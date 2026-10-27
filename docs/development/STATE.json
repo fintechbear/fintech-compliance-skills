@@ -111,7 +111,9 @@
       ],
       "blockers": [
         "legal source_refs marked needs_review (article+scope not confirmed vs primary text this phase)"
-      ]
+      ],
+      "validated_commit": "3fac9d3f026fd94d7e75e3ef163002437f154eac",
+      "ci": "run 40521669408 (3fac9d3) success incl control-catalog + installer 18/20/22/24 x ubuntu/windows + harness"
     },
     {
       "id": "P04",
