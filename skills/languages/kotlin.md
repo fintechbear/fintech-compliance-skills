@@ -89,7 +89,7 @@ Beware: a Kotlin **`data class` auto-generates a `toString()` that prints every 
 1. **Authenticate & authorize** — Spring: `@PreAuthorize("hasAuthority('transfer.execute')")`; Ktor: `authenticate("auth-jwt") { ... }` + an explicit ownership check. Confirm the caller controls the source account. Fail closed.
 2. **Validate at the boundary** — explicit currency; amount as `BigDecimal` or a minor-unit `Long` — **never `Double`/`Float`** (core rule). Kotlin `require(...)` / Bean Validation.
 3. **Idempotency gate** — require a client `Idempotency-Key`; look it up first and return the stored result on a repeat. Persist the key in the **same transaction** as the effect with a unique constraint, so a concurrent retry collides rather than double-spends.
-4. **Approval gates** — maker-checker / dual control, limit thresholds, SCA step-up, sanctions/AML hold **before** funds move. Onboarding: KYC/sanctions screening must pass before the account is usable (refusal rule 5).
+4. **Approval gates** — maker-checker / dual control, limit thresholds, SCA step-up, sanctions/AML hold **before** funds move. Onboarding: KYC/sanctions screening must pass before the account is usable (FCS-AML-001).
 5. **Execute inside ONE DB transaction** — debit, credit, ledger rows, and the **audit record** commit atomically or roll back together.
 6. **Audit record** — actor, action, server-UTC time, source, destination, amount+currency, idempotency key, before/after balances. Append-only.
 7. **Emit event / notify** — only **after commit**.
@@ -201,7 +201,7 @@ fun encrypt(dataKey: ByteArray /*256-bit*/, plaintext: ByteArray, aad: ByteArray
 
 **Key management — envelope encryption with a KMS/HSM:** master key in **AWS KMS / Azure Key Vault / GCP KMS / HashiCorp Vault Transit / Thales HSM** — never in the JVM, config, or source. `GenerateDataKey` → use the plaintext data key in-memory, store the encrypted data key beside the ciphertext, decrypt via KMS at read time. **Zero** the plaintext data key (`dataKey.fill(0)`) after use. **Rotate** master keys and re-wrap on schedule; support decrypting old-key data during rotation. Crypto-shredding (drop the data key) satisfies "right to erasure".
 
-**Forbidden (refusal rule 4):** hardcoded keys/IVs, static/reused IVs, `AES/ECB/*`, `DES`/`3DES`, `Cipher.getInstance("AES")` with no mode (**defaults to ECB** — a trap), home-rolled crypto, `Random`/`Math.random()`/`kotlin.random.Random` for keys/IVs (use `SecureRandom`), disabling TLS/cert validation (rule 8). TLS 1.2+ everywhere.
+**Forbidden (FCS-CRYPTO-001):** hardcoded keys/IVs, static/reused IVs, `AES/ECB/*`, `DES`/`3DES`, `Cipher.getInstance("AES")` with no mode (**defaults to ECB** — a trap), home-rolled crypto, `Random`/`Math.random()`/`kotlin.random.Random` for keys/IVs (use `SecureRandom`), disabling TLS/cert validation (rule 8). TLS 1.2+ everywhere.
 
 ### Encrypted two-way — ANDROID (hardware-backed, the big difference)
 

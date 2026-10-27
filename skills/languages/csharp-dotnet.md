@@ -50,7 +50,7 @@ CVV/CVC, full track data, PIN, plaintext passwords, private keys, and raw sessio
 
 - **Structured logging:** Serilog (JSON via `Serilog.Formatting.Compact.CompactJsonFormatter`), surfaced through `ILogger<T>`.
 - **Redaction mechanism:** `Destructurama.Attributed` attributes + `Destructure.UsingAttributes()`; optionally `Microsoft.Extensions.Compliance.Redaction` (data-classification redactors) on .NET 8+ for a framework-native classification model.
-- **Log integrity:** the money-movement audit trail must be **append-only**. Options: a dedicated audit table with no `UPDATE`/`DELETE` grant for the app principal; a **hash-chained** audit record (each row stores `SHA-256(prev_hash || payload)` so tampering is detectable — SHA-256 for *integrity*, never SHA-1/MD5, refusal rule 4); or a WORM/immutable sink (e.g. append-only object storage with object lock). Ship logs off-host promptly so a compromised host cannot rewrite history.
+- **Log integrity:** the money-movement audit trail must be **append-only**. Options: a dedicated audit table with no `UPDATE`/`DELETE` grant for the app principal; a **hash-chained** audit record (each row stores `SHA-256(prev_hash || payload)` so tampering is detectable — SHA-256 for *integrity*, never SHA-1/MD5, FCS-CRYPTO-001); or a WORM/immutable sink (e.g. append-only object storage with object lock). Ship logs off-host promptly so a compromised host cannot rewrite history.
 
 ---
 
@@ -61,9 +61,9 @@ CVV/CVC, full track data, PIN, plaintext passwords, private keys, and raw sessio
 1. **AuthN + AuthZ** — authenticated principal; policy check (`[Authorize(Policy="transfers.create")]`) that the actor may move funds from the source account.
 2. **Validate** — amount is positive, currency matches, source/destination valid; money as `decimal` (see Hashing & encryption / money note below).
 3. **Idempotency gate** — require a client `Idempotency-Key`. Look it up first; if seen, return the stored response and do nothing. Persist the key atomically with the effect.
-4. **Sanctions/AML screening** — for onboarding and for cross-party transfers where required; never skip (refusal rule 5). Record the screening decision.
+4. **Sanctions/AML screening** — for onboarding and for cross-party transfers where required; never skip (FCS-AML-001). Record the screening decision.
 5. **Begin transaction** (see concurrency model below).
-6. **Apply** — debit source, credit destination, write the **ledger/audit record inside the same transaction** so money movement and its audit entry commit or roll back together (refusal rule 6: never post funds without an audit record).
+6. **Apply** — debit source, credit destination, write the **ledger/audit record inside the same transaction** so money movement and its audit entry commit or roll back together (FCS-AUDIT-001: never post funds without an audit record).
 7. **Commit**; emit `Information` audit log keyed by idempotency key + actor.
 8. **On conflict** — catch `DbUpdateConcurrencyException`, re-read, and retry or surface a 409; never silently overwrite.
 
@@ -194,7 +194,7 @@ Key points:
 - **16-byte (128-bit) tag.** On .NET 8+ the tag size is declared in the constructor (`tagSizeInBytes`); the old parameterless-tag constructor is obsolete (`SYSLIB0053`), and macOS supports only 16-byte tags. Store `nonce || tag || ciphertext` together.
 - **`associatedData` (AAD):** bind ciphertext to context (e.g. the account id / record id) so a blob cannot be transplanted between records.
 - **Key management & rotation:** data-encryption keys (DEKs) are generated per-record or per-tenant and wrapped by a **key-encryption key (KEK)** held in AWS KMS / Azure Key Vault / an HSM. Rotate the KEK on schedule; re-wrap DEKs, no plaintext re-encryption needed. Keep a key id/version with each ciphertext for rotation and crypto-shredding (delete a tenant's DEK to render their data unrecoverable).
-- **FORBIDDEN (refusal rule 4):** static/hardcoded keys or IVs, ECB mode, CBC without a separate MAC, home-rolled crypto, and reusing a GCM nonce.
+- **FORBIDDEN (FCS-CRYPTO-001):** static/hardcoded keys or IVs, ECB mode, CBC without a separate MAC, home-rolled crypto, and reusing a GCM nonce.
 
 ### The Data Protection API is NOT general-purpose data-at-rest encryption
 
@@ -306,7 +306,7 @@ public sealed class TransferController(AppDbContext db, ILogger<TransferControll
                 TenantId = tenantId, Operation = "transfers.create", Key = idemKey,
                 PayloadFingerprint = fingerprint, StoredResponse = JsonSerializer.Serialize(response) });
 
-            await db.SaveChangesAsync(ct);       // debit + credit + audit + idempotency commit atomically (refusal rule 6)
+            await db.SaveChangesAsync(ct);       // debit + credit + audit + idempotency commit atomically (FCS-AUDIT-001)
             await tx.CommitAsync(ct);
 
             // structured + masked: attributes handle masking; no interpolation, no PAN/memo in the line
@@ -358,14 +358,14 @@ The realistic mistake — and the red lines it crosses.
 ```csharp
 public async Task Transfer(string pan, string cvv, decimal amount, string password)
 {
-    // ❌ plaintext password / reversible or broken hash — refusal rule 2 & 4
+    // ❌ plaintext password / reversible or broken hash — FCS-SECRET-001, FCS-CRYPTO-001
     user.PasswordHash = Convert.ToHexString(MD5.HashData(Encoding.UTF8.GetBytes(password)));
 
     // ❌ storing + logging PAN, storing CVV — refusal rules 1 & 3 (PCI-DSS)
     _db.Cards.Add(new Card { Pan = pan, Cvv = cvv });
     _log.LogInformation($"charging card {pan} cvv {cvv} for {amount}"); // interpolated → no masking
 
-    // ❌ hardcoded key + ECB + home-rolled crypto — refusal rule 4
+    // ❌ hardcoded key + ECB + home-rolled crypto — FCS-CRYPTO-001
     using var aes = Aes.Create();
     aes.Mode = CipherMode.ECB;
     aes.Key = Encoding.UTF8.GetBytes("my-super-secret-key-1234");
@@ -373,7 +373,7 @@ public async Task Transfer(string pan, string cvv, decimal amount, string passwo
     // ❌ double money math — rounding errors in financial amounts
     double total = 19.99 * qty;
 
-    // ❌ no idempotency, no audit record, no concurrency token — refusal rule 6
+    // ❌ no idempotency, no audit record, no concurrency token — FCS-AUDIT-001
     from.Balance -= amount;
     to.Balance   += amount;
     await _db.SaveChangesAsync();   // a retry double-spends; a concurrent debit is silently lost

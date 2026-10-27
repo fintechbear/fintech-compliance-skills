@@ -30,7 +30,7 @@ Redis has two distinct log surfaces, and fintech teams conflate them at their pe
 
 **What is MASKED before anything reaches a sink.** If you ever log a key or payload for debugging, mask it: session token / JWT (never — not even masked), PAN (first-6/last-4 at most, and it should not be in Redis to begin with), national ID, email, API keys. Prefer logging a **key *name* pattern** (`session:{userId}`) over the key's *value*.
 
-**What is NEVER logged, at any level.** CVV/CVC (never stored, never logged — refusal rule 1), the plaintext session token or refresh token, the `requirepass`/ACL password, a TLS private key, the application encryption key, or the raw value of any key holding PII. (Refusal rules 1, 3, 4.)
+**What is NEVER logged, at any level.** CVV/CVC (never stored, never logged — FCS-LOG-001), the plaintext session token or refresh token, the `requirepass`/ACL password, a TLS private key, the application encryption key, or the raw value of any key holding PII. (Refusal rules 1, 3, 4.)
 
 **Mechanism.** Set `loglevel notice` (not `debug`, which can surface command arguments) and ship the server log + `ACL LOG GET` + `SLOWLOG GET` output to your SIEM. Never log command *arguments* on data paths. For a defensible access trail, use Redis Enterprise **database auditing** (connection auditing shipping to an external, append-only collector) rather than the OSS server log.
 
@@ -92,7 +92,7 @@ Then also disable backups on the managed tier. If you *do* need persistence for 
 
 **Key management & rotation.** Application data keys come from a KMS under envelope encryption and never live in `redis.conf` or source. Rotate the KMS master key on schedule; because cached data is short-lived (TTL), re-encryption usually happens naturally on cache miss. Rotate ACL passwords and TLS certificates on schedule; store a key id with longer-lived ciphertext so it survives rotation.
 
-**Forbidden (refusal red lines):** writing PAN/CVV/PIN into any Redis key (refusal rule 1); storing a password or reversible secret as a Redis value (rule 2); `requirepass`/ACL off and `protected-mode no` on a sensitive instance; plaintext transport (no TLS) for regulated data (rule 8); a hardcoded ACL password or TLS key in source/config committed to git (rule 7); `MD5`/custom crypto for the application-side encryption (rule 4); and leaving persistence on + unencrypted disk for an instance holding sensitive values.
+**Forbidden (refusal red lines):** writing PAN/CVV/PIN into any Redis key (FCS-PAN-001); storing a password or reversible secret as a Redis value (rule 2); `requirepass`/ACL off and `protected-mode no` on a sensitive instance; plaintext transport (no TLS) for regulated data (rule 8); a hardcoded ACL password or TLS key in source/config committed to git (rule 7); `MD5`/custom crypto for the application-side encryption (rule 4); and leaving persistence on + unencrypted disk for an instance holding sensitive values.
 
 ## Transport, access control & dangerous commands (storage-side hardening)
 

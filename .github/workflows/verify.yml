@@ -67,3 +67,18 @@ jobs:
       - name: Shell control-flow fault test (fake shims; not a real DB run)
         working-directory: examples/dotnet-postgres-harness
         run: bash test-run-sh.sh
+
+  # Control catalog + profile integrity: schema shape, no unknown/legacy citations,
+  # no broken skill_refs/test_refs, profiles explicitly declare entity role. Zero deps.
+  controls:
+    name: control-catalog
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Validate control catalog, profiles and citations
+        run: node controls/validate-controls.js
+      - name: Citation migration is idempotent (no drift)
+        run: node controls/migrate-refusal-citations.js --check

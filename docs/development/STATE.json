@@ -97,12 +97,21 @@
     },
     {
       "id": "P03",
-      "status": "TODO",
+      "status": "PASS",
       "depends_on": [
         "P02"
       ],
-      "evidence": [],
-      "blockers": []
+      "evidence": [
+        "controls/catalog.json (13 controls: 11 refusal red lines FCS-*-001 + FCS-MONEY-001 + FCS-IDEMP-001)",
+        "controls/schema/{control,profile}.schema.json + 2 example profiles (obliged-entity + vendor)",
+        "58 broken numbered refusal-rule citations migrated to FCS ids by context (controls/refusal-citation-migration.json)",
+        "controls/validate-controls.js: controls:13 skills:27 errors:0 warnings:0",
+        "installer 27/27 still PASS after skill edits; CI control-catalog job added",
+        "docs/development/P03.md"
+      ],
+      "blockers": [
+        "legal source_refs marked needs_review (article+scope not confirmed vs primary text this phase)"
+      ]
     },
     {
       "id": "P04",

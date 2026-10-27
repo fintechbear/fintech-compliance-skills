@@ -77,7 +77,7 @@ Canonical money-movement order inside a Db2 unit of work (SQL PL procedure):
 1. **Authenticate & authorize** — Db2 does **not** authenticate internally in a bank core; authentication is delegated to the OS/external security manager (RACF on z/OS; a plugin or OS on LUW). Identify the caller with `SESSION_USER` / `CURRENT SQLID`. Enforce row access with an **RCAC row permission** so a caller can only touch accounts they own. Fail closed.
 2. **Validate** — amounts as `DECIMAL` (never `REAL`/`DOUBLE`/`FLOAT` for money — binary floating point cannot represent decimal cents exactly), explicit currency, positive amount, known accounts.
 3. **Idempotency gate** — a `transfer_request` table with a `UNIQUE` constraint (or `PRIMARY KEY`) on the client idempotency key; insert it first in the same unit of work so a concurrent retry raises `SQLSTATE 23505` (duplicate key) instead of double-spending.
-4. **Approval / AML gates** — maker-checker, limit thresholds, sanctions/AML (MASAK/OFAC) hold **before** funds move. Onboarding: KYC/sanctions must pass before the account is usable (refusal rule 5).
+4. **Approval / AML gates** — maker-checker, limit thresholds, sanctions/AML (MASAK/OFAC) hold **before** funds move. Onboarding: KYC/sanctions must pass before the account is usable (FCS-AML-001).
 5. **Execute in one unit of work** — lock the involved account rows in a **deterministic order** (e.g. ascending account id) to avoid deadlocks; debit, credit, insert ledger rows, then `COMMIT`. Everything commits or everything rolls back. Do not split the money move and its business audit row across separate commits.
 6. **Audit record** — the `EXECUTE` audit policy captures the DML automatically; additionally write an append-only business ledger row (actor, action, UTC timestamp, source, dest, amount+currency, idempotency key, pre/post balances).
 7. **Notify** — only after commit.
@@ -196,7 +196,7 @@ CREATE TABLE CORE.CARD (
   ID        BIGINT PRIMARY KEY NOT NULL,
   PAN_ENC   VARCHAR(256) FOR BIT DATA,         -- AES-256-CBC via ENCRYPT_DATAKEY, key label in ICSF
   PAN_LAST4 CHAR(4)                             -- for display/search; masked by RCAC to last 4
-  -- NO cvv column: CVV must never be stored (PCI-DSS, refusal rule 1)
+  -- NO cvv column: CVV must never be stored (PCI-DSS, FCS-SAD-001)
 );
 
 -- Atomic, deadlock-safe transfer with append-only audit row (SQL PL).

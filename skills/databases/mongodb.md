@@ -68,7 +68,7 @@ have different sensitivity and different retention duties:
 Route the **audit log** and **application audit collection** to storage separate from
 the noisy diagnostic log, retain per regulation (commonly **5–7 years**; see your
 regional skill), and protect them from edit/delete. Disabling audit logging on money
-movement is a hard red line (refusal rule 6).
+movement is a hard red line (FCS-AUDIT-001).
 
 ### What is MASKED before it reaches any sink
 
@@ -112,7 +112,7 @@ MongoDB has no native WORM mode, so make the application audit collection tamper
   Enforce it in the database, not just the app.
 - **Hash-chain** each audit document: store
   `prevHash` and `hash = SHA-256(prevHash || canonicalBson(doc))`. A broken chain
-  proves tampering. Use SHA-256 — never MD5/SHA-1 for integrity (refusal rule 4).
+  proves tampering. Use SHA-256 — never MD5/SHA-1 for integrity (FCS-CRYPTO-001).
 - For the **audit log** stream, write it to an **append-only destination** (syslog to a
   WORM/object-lock sink, e.g. S3 Object Lock in compliance mode) and alert on any
   attempt to disable auditing. The audit log file on the host can be tampered with by
@@ -216,7 +216,7 @@ failover (durability — important for a ledger). Pair with `readConcern: "major
 ### Onboarding / KYC variation
 
 Same backbone, different middle: validate identity input → run KYC/AML/sanctions
-screening (never skip — refusal rule 5) → persist the **decision + case id** to the
+screening (never skip — FCS-AML-001) → persist the **decision + case id** to the
 append-only audit collection → gate account activation on a passing decision. Store raw
 identity documents **encrypted** (CSFLE, below); write only the decision to logs and
 audit, never the document contents.
@@ -279,7 +279,7 @@ security:
 > operator itself, use Layer 3.
 
 **Layer 2 — Encryption in transit (TLS).** See the TLS subsection below — mandatory for
-any sensitive data (refusal rule 8).
+any sensitive data (FCS-TLS-001).
 
 **Layer 3 — In-use / client-side field encryption (CSFLE & Queryable Encryption).**
 The strongest storage-side control: fields are encrypted **in the driver, on the
@@ -360,7 +360,7 @@ const secureClient = new MongoClient(uri, {
 ### TLS (in transit) — mandatory
 
 Encrypt all client↔server and intra-cluster traffic. Never allow plaintext for
-sensitive data (refusal rule 8).
+sensitive data (FCS-TLS-001).
 
 ```yaml
 # mongod.conf — require TLS, validate certs. Atlas enables TLS by default.
@@ -376,7 +376,7 @@ net:
 - Use **`requireTLS`** in production; use valid CA-signed certificates. MongoDB enforces
   a **minimum 128-bit cipher** strength.
 - **`allowInvalidCertificates` / `allowInvalidHostnames`** disable the checks that stop
-  MITM — forbidden in production (refusal rule 8). An invalid cert is *only* enough to
+  MITM — forbidden in production (FCS-TLS-001). An invalid cert is *only* enough to
   establish the TLS pipe, never enough to authenticate.
 - For strong auth, use **x.509 client certificates (mTLS)** or **LDAP/Kerberos**
   (Enterprise) instead of password auth where your environment supports it.

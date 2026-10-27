@@ -139,7 +139,7 @@ Audit logs must be tamper-evident:
   **never MD5/SHA-1** for integrity.
 - Restrict who can read audit logs (they contain actor/account data) and alert on any
   attempt to disable or delete them. Disabling audit logging on money movement is a
-  hard red line (refusal rule 6).
+  hard red line (FCS-AUDIT-001).
 
 ---
 
@@ -257,7 +257,7 @@ conflict. Never read-modify-write a balance outside a transaction.
 ### Onboarding / KYC variation
 
 Same backbone, different middle: validate identity input → run KYC/AML/sanctions
-screening (never skip it — refusal rule 5) → persist the *decision* and case id to the
+screening (never skip it — FCS-AML-001) → persist the *decision* and case id to the
 audit store → gate account activation on a passing decision. Store raw identity
 documents encrypted (below); log only the decision, not the document.
 
@@ -267,7 +267,7 @@ documents encrypted (below); log only the decision, not the document.
 
 The dividing line: **one-way hash things you only ever need to *verify*** (passwords);
 **two-way encrypt things you need to *read back*** (PAN, IBAN, national ID). Never use
-reversible encryption for passwords (refusal rule 2); never use a plain hash for data
+reversible encryption for passwords (FCS-SECRET-001); never use a plain hash for data
 you must recover.
 
 ### Hashed one-way — passwords & secrets at rest
@@ -283,7 +283,7 @@ re-benchmark periodically.
 If a native build is impossible, `node:crypto` **`scrypt`** is a pure-standard-library
 fallback (OWASP fallback: cost `N=2^17`, `r=8`, `p=1`). **bcrypt** is also acceptable
 (work factor ≥ 10). **MD5 and SHA-1/SHA-2 are NOT password hashes** — a fast hash is
-crackable at billions/sec; using them for passwords is a red line (refusal rule 2/4).
+crackable at billions/sec; using them for passwords is a red line (FCS-SECRET-001, FCS-CRYPTO-001).
 
 ```ts
 import * as argon2 from "argon2";
@@ -372,8 +372,8 @@ token + masked PAN (see "Bad example" and the PCI-DSS skill).
   key material.
 - Keep TLS verification ON (Node default). **Never** set
   `NODE_TLS_REJECT_UNAUTHORIZED=0` or `rejectUnauthorized: false` for sensitive traffic
-  (refusal rule 8).
-- **Forbidden (red lines, refusal rule 4/7):** hardcoded keys or IVs, static/reused
+  (FCS-TLS-001).
+- **Forbidden (red lines, FCS-CRYPTO-001, FCS-SECRET-002):** hardcoded keys or IVs, static/reused
   nonces, **ECB mode** (`aes-256-ecb`), DES/3DES, `Math.random()` for anything
   security-sensitive (use `crypto.randomBytes`/`randomUUID`), home-rolled crypto,
   MD5/SHA-1 for integrity or passwords, disabling TLS validation.
@@ -478,7 +478,7 @@ function pay(a: any, b: any, amount: number) {
 }
 ```
 
-**The red lines it crosses:** stores raw PAN and CVV (PCI-DSS, refusal rule 1);
+**The red lines it crosses:** stores raw PAN and CVV (PCI-DSS, FCS-PAN-001);
 "hashes" a password with MD5 (rules 2 & 4); logs PAN, CVV, and SSN via `console.log`
 with no redaction (rule 3); uses binary `number` float for money (silent rounding
 errors); moves funds with no transaction, no row lock, no idempotency key, and

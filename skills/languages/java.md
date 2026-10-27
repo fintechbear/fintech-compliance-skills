@@ -74,7 +74,7 @@ Canonical money-movement step order in a Spring service:
 1. **Authenticate & authorize** — `@PreAuthorize("hasAuthority('transfer.execute')")` on the service method; confirm the caller owns/controls the source account. Fail closed.
 2. **Validate at the boundary** — Bean Validation (`jakarta.validation` / `javax.validation`: `@NotNull`, `@Positive`, `@DecimalMin`), explicit currency, amount as `BigDecimal` or minor-unit `long` — **never `double`/`float`** (core rule).
 3. **Idempotency gate** — require a client `Idempotency-Key`; look it up first. If seen, return the stored result instead of re-executing. Persist the key in the same transaction as the effect, with a unique constraint, so a concurrent retry collides rather than double-spends.
-4. **Approval gates** — enforce maker-checker / dual control and limit thresholds (e.g. SCA step-up, sanctions/AML hold) **before** funds move. For onboarding: KYC/sanctions screening must pass before the account is usable (refusal rule 5).
+4. **Approval gates** — enforce maker-checker / dual control and limit thresholds (e.g. SCA step-up, sanctions/AML hold) **before** funds move. For onboarding: KYC/sanctions screening must pass before the account is usable (FCS-AML-001).
 5. **Execute inside one DB transaction** — `@Transactional`. Debit source, credit destination, write the ledger entries, and write the **audit record** atomically. If anything fails, the whole unit rolls back; an audit row must never persist for a transfer that didn't happen, and vice versa.
 6. **Audit record** — who (actor), what (action), when (server UTC), source, destination, amount+currency, idempotency key, before/after balances. Append-only (see Log integrity).
 7. **Emit event / notify** — only after commit (use `@TransactionalEventListener(phase = AFTER_COMMIT)` so downstream never sees an uncommitted transfer).
@@ -156,7 +156,7 @@ byte[] encrypt(byte[] dataKey /*256-bit*/, byte[] plaintext, byte[] aad) throws 
 - **Zero the plaintext data key** (`Arrays.fill(dataKey, (byte)0)`) after use.
 - **Rotate** master keys (KMS auto-rotation) and re-wrap data keys on schedule; support decrypting old-key data during rotation.
 
-**Forbidden (refusal rule 4):** hardcoded keys/IVs, static or reused IVs, `AES/ECB/*`, `DES`/`3DES`, `"AES"` with no explicit mode (JCE defaults to **ECB** — a trap), home-rolled crypto, `Random`/`Math.random()` for keys or IVs (use `SecureRandom`), disabling TLS/cert validation for data in transit (rule 8). TLS 1.2+ for all sensitive transport.
+**Forbidden (FCS-CRYPTO-001):** hardcoded keys/IVs, static or reused IVs, `AES/ECB/*`, `DES`/`3DES`, `"AES"` with no explicit mode (JCE defaults to **ECB** — a trap), home-rolled crypto, `Random`/`Math.random()` for keys or IVs (use `SecureRandom`), disabling TLS/cert validation for data in transit (rule 8). TLS 1.2+ for all sensitive transport.
 
 ## Country differences (how the same Java code changes)
 

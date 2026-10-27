@@ -53,7 +53,7 @@ Enable the relevant SMF types in `SMFPRMxx` (e.g. `SYS(TYPE(...,80,101,102,...))
       * DISPLAYed, never written to a report, never logged.
 ```
 
-**What is NEVER logged / stored / displayed:** CVV/CVC (must not be retained after authorization — PCI-DSS, refusal rule 1), full PAN, full track/magstripe/chip data, PIN or PIN block, plaintext passwords or phrases, clear cryptographic keys, full national IDs. A COBOL-specific trap: **a program ABEND produces a dump (SYSUDUMP/SYSABEND/CEEDUMP) that captures `WORKING-STORAGE`.** If a clear PAN or key sits in storage at ABEND time it is now in the dump data set. Minimise the lifetime of clear sensitive data, overwrite the field (`MOVE SPACES`/`INITIALIZE`) as soon as it is consumed, and ensure dump data sets are RACF-protected and (ideally) encrypted.
+**What is NEVER logged / stored / displayed:** CVV/CVC (must not be retained after authorization — PCI-DSS, FCS-LOG-001), full PAN, full track/magstripe/chip data, PIN or PIN block, plaintext passwords or phrases, clear cryptographic keys, full national IDs. A COBOL-specific trap: **a program ABEND produces a dump (SYSUDUMP/SYSABEND/CEEDUMP) that captures `WORKING-STORAGE`.** If a clear PAN or key sits in storage at ABEND time it is now in the dump data set. Minimise the lifetime of clear sensitive data, overwrite the field (`MOVE SPACES`/`INITIALIZE`) as soon as it is consumed, and ensure dump data sets are RACF-protected and (ideally) encrypted.
 
 **Log integrity (append-only / WORM / tamper-evidence).** SMF is designed as an append-only audit source: records are written sequentially and offloaded; the SMF data sets / log stream must be RACF-protected so the application ID cannot alter or delete them, and should be encrypted and retained per the applicable framework (PCI-DSS v4.0.1 **Req. 10** and SOX both require tamper-evident retention). For a business audit table in Db2, revoke `UPDATE`/`DELETE` from the application plan/role (grant `INSERT` only), and optionally hash-chain rows (`row.hash = SHA-256(prev_hash || canonical(row))`, computed via ICSF `CSNBOWH` one-way hash) so an altered or deleted row breaks the chain. Keep hosts time-synced (STP/NTP) so SMF and audit timestamps are trustworthy.
 
@@ -66,7 +66,7 @@ On the mainframe there are two execution contexts with **different integrity mac
 1. **Authenticate & authorize via RACF, not in the program.** The CICS transaction is RACF-protected (TCICSTRN/GCICSTRN class); the signed-on userid is established by CICS. Inside the program, verify *entitlement to this specific account* against a RACF resource or an authorization table — fail closed (deny on any error).
 2. **Validate at the boundary.** Numeric money fields as **packed decimal** (`PIC S9(13)V99 COMP-3`) — **never `COMP-1`/`COMP-2` (float)** for money (core rule). Check sign, range, currency, and that the amount is positive. Reject on `NUMERIC` class-test failure before use.
 3. **Idempotency gate.** Require a client idempotency key; look it up first (unique index on the ledger/idempotency table). If already present, return the stored result — do **not** re-execute. Insert the key in the *same unit of work* as the posting so a concurrent retry collides on the unique constraint instead of double-spending.
-4. **Approval / screening gates before funds move.** Enforce maker-checker / dual control and limit thresholds; for onboarding, KYC/sanctions screening must pass before the account is usable (refusal rule 5); for in-scope payments apply the AML/sanctions hold (MASAK/OFAC/EU lists).
+4. **Approval / screening gates before funds move.** Enforce maker-checker / dual control and limit thresholds; for onboarding, KYC/sanctions screening must pass before the account is usable (FCS-AML-001); for in-scope payments apply the AML/sanctions hold (MASAK/OFAC/EU lists).
 5. **Execute inside one unit of work.** Debit source, credit destination, write ledger entries, and write the **audit row** — all between syncpoints. Use `EXEC CICS SYNCPOINT` to commit or `EXEC CICS SYNCPOINT ROLLBACK` to back everything out. Under CICS, Db2/VSAM/MQ updates in the UOW are coordinated by **two-phase commit** (CICS is the coordinator) — if any resource cannot commit, all roll back ([ibm](https://www.ibm.com/docs/SSEPEK_12.0.0/apsg/src/tpc/db2z_unitworkcics.html)). An audit row must never persist for a transfer that rolled back, and vice-versa — hence it goes **inside** the UOW.
 6. **Emit downstream events only after commit** (e.g. put to MQ *in syncpoint* so the message is delivered only if the UOW commits).
 
@@ -89,11 +89,11 @@ The rule is **all crypto goes through ICSF to the hardware (CPACF / Crypto Expre
 ### Hashed one-way (passwords, integrity hashes)
 
 - **User passwords are RACF's job, not the program's.** RACF stores password/phrase verifiers using **KDFAES** (key-derivation using AES, salted and iterated) when enabled via `SETROPTS PASSWORD(ALGORITHM(KDFAES))`. A COBOL program **authenticates by calling RACF** (`RACROUTE REQUEST=VERIFY`, or via the signed-on CICS/TSO userid) — it must **never** read, store, or hash a password itself. If you find a program storing or comparing passwords, that is a refusal-policy violation (rules 2, 3).
-- **One-way hashes for data integrity / hash-chaining** use ICSF **One-Way Hash Generate** `CSNBOWH` with **SHA-256/384/512**. **Forbidden:** MD5, SHA-1 for integrity, and any home-grown "hash" built from `MOVE`/arithmetic (refusal rule 4).
+- **One-way hashes for data integrity / hash-chaining** use ICSF **One-Way Hash Generate** `CSNBOWH` with **SHA-256/384/512**. **Forbidden:** MD5, SHA-1 for integrity, and any home-grown "hash" built from `MOVE`/arithmetic (FCS-CRYPTO-001).
 
 ### Encrypted two-way (data you must recover: PAN*, IBAN, national ID)
 
-> *PAN: the right answer is usually **don't store it** — tokenize via the processor/switch (network token or gateway token). Store CVV **never** (PCI-DSS, refusal rule 1). Encrypt PAN only if you are a PCI-scoped entity that genuinely must retain it.
+> *PAN: the right answer is usually **don't store it** — tokenize via the processor/switch (network token or gateway token). Store CVV **never** (PCI-DSS, FCS-SAD-001). Encrypt PAN only if you are a PCI-scoped entity that genuinely must retain it.
 
 Two layers, both AES-256, both hardware-accelerated by **CPACF** with keys protected by **ICSF**:
 
@@ -140,7 +140,7 @@ Two layers, both AES-256, both hardware-accelerated by **CPACF** with keys prote
 
 **Key management:** master keys live in the **Crypto Express HSM**; operational keys live wrapped in the **CKDS** and are referenced by **label**. Access to key labels and ICSF services is RACF-controlled via **CSFKEYS** (per-key) and **CSFSERV** (per-service) classes — so "who can decrypt" is itself audited in SMF 80. Rotate keys by generating a new labelled key and re-enciphering (ICSF supports key rotation / re-wrap); support decrypting old-key data during the rollover.
 
-**Forbidden (refusal rule 4, 7):** any cipher implemented in COBOL (reference-modification "scrambling", XOR, `MOVE`-based obfuscation); a key literal in the program or a copybook; a static/reused IV; AES-ECB for structured data; DES/3DES for new work; reading a clear key into `WORKING-STORAGE`; disabling TLS/AT-TLS for data in transit (rule 8). Use **AT-TLS** (policy-based TLS in the TCP/IP stack) or z/OS System SSL for sensitive transport — TLS 1.2+.
+**Forbidden (FCS-CRYPTO-001, FCS-SECRET-002):** any cipher implemented in COBOL (reference-modification "scrambling", XOR, `MOVE`-based obfuscation); a key literal in the program or a copybook; a static/reused IV; AES-ECB for structured data; DES/3DES for new work; reading a clear key into `WORKING-STORAGE`; disabling TLS/AT-TLS for data in transit (rule 8). Use **AT-TLS** (policy-based TLS in the TCP/IP stack) or z/OS System SSL for sensitive transport — TLS 1.2+.
 
 ## Country differences (how the same COBOL/z/OS code changes)
 

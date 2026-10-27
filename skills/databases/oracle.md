@@ -80,7 +80,7 @@ Canonical money-movement order inside a PL/SQL transaction:
 1. **Authenticate & authorize** — identify the caller (`SYS_CONTEXT('USERENV','SESSION_USER')`, or app user via `DBMS_SESSION.SET_IDENTIFIER` / `CLIENT_IDENTIFIER`). Enforce row access with **VPD** so a caller can only touch accounts they own. Fail closed.
 2. **Validate** — amounts as `NUMBER` (never `BINARY_FLOAT`/`BINARY_DOUBLE` for money — binary floats cannot represent decimal cents exactly), explicit currency, positive amount, known accounts.
 3. **Idempotency gate** — a `transfer_request` table with a `UNIQUE` constraint on the client idempotency key; insert it first in the same transaction so a concurrent retry raises `DUP_VAL_ON_INDEX` instead of double-spending.
-4. **Approval / AML gates** — maker-checker, limit thresholds, sanctions/AML (MASAK/OFAC) hold **before** funds move. Onboarding: KYC/sanctions must pass before the account is usable (refusal rule 5).
+4. **Approval / AML gates** — maker-checker, limit thresholds, sanctions/AML (MASAK/OFAC) hold **before** funds move. Onboarding: KYC/sanctions must pass before the account is usable (FCS-AML-001).
 5. **Execute in one transaction** — lock the involved account rows with `SELECT ... FOR UPDATE` in a **deterministic order** (e.g. ascending account id) to avoid deadlocks; debit, credit, insert ledger rows, write the audit record, then `COMMIT`. Everything commits or everything rolls back. Do **not** use an `AUTONOMOUS_TRANSACTION` for the business audit record — it would persist even if the transfer rolls back (acceptable only for a separate security/error log, never for the money ledger).
 6. **Audit record** — Unified Auditing captures the DML automatically; additionally write an append-only business ledger row (actor, action, UTC time, source, dest, amount+currency, idempotency key, pre/post balances).
 7. **Notify** — only after commit.
@@ -261,7 +261,7 @@ CREATE TABLE core.card (
   pan_iv        RAW(12),
   pan_tag_aad   RAW(512),
   pan_last4     CHAR(4)       -- for display/search; redacted to show only last 4
-  -- NO cvv column: CVV must never be stored (PCI-DSS, refusal rule 1)
+  -- NO cvv column: CVV must never be stored (PCI-DSS, FCS-SAD-001)
 ) TABLESPACE core_sensitive;
 ```
 

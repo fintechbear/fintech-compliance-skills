@@ -75,10 +75,10 @@ Add a `tracing_subscriber::Layer` as a second line of defence that drops any fie
 
 Canonical money-movement order, each step mapped to the Rust mechanism that enforces it:
 
-1. **Authenticate + authorize** the caller. Check least-privilege role/scope before anything else (refusal rule 10). Carry identity + request-scoped values through the call graph in an explicit `Context` struct or a `tracing` span field — never a global `static mut`.
+1. **Authenticate + authorize** the caller. Check least-privilege role/scope before anything else (FCS-AUTHZ-001). Carry identity + request-scoped values through the call graph in an explicit `Context` struct or a `tracing` span field — never a global `static mut`.
 2. **Validate** amount (minor units / `Decimal`, see Hashing/Money), currency, accounts. Model states as an `enum` so an invalid transition fails to compile; reject at the edge.
 3. **Idempotency gate.** Require an idempotency key on every mutating payment endpoint. Look it up first; if seen, return the stored result without re-executing. This is the single most important defence against double-charges on retries/timeouts.
-4. **AML / sanctions / KYC** screening on onboarding and on transfers where required. A hit is a `warn` + audit + hold, never a silent pass (refusal rule 5).
+4. **AML / sanctions / KYC** screening on onboarding and on transfers where required. A hit is a `warn` + audit + hold, never a silent pass (FCS-AML-001).
 5. **Open a DB transaction** (`pool.begin().await?` with `sqlx`); do the balance read, the invariant check, the debit/credit, **and the audit insert** inside the *same* transaction so they commit or roll back atomically. If you never call `.commit()`, `sqlx` **rolls back on drop** — the safe default.
 6. **Approval gate** for flows above threshold (dual control / maker-checker): write a pending record, require a second authorized principal to approve before the transfer posts.
 7. **Write the audit record** (actor, action, source/dest, amount, idempotency key, decision, timestamp, request id) to the append-only store *within* the transaction.
@@ -180,7 +180,7 @@ fn verify_password(pw: &[u8], phc: &str) -> Result<bool, argon2::password_hash::
 }
 ```
 
-**bcrypt fallback.** The [`bcrypt`](https://docs.rs/bcrypt) crate with `cost >= 12` is acceptable where Argon2 is unavailable, but bcrypt silently truncates input at **72 bytes** — prefer Argon2id. **Never MD5 or SHA-1** for passwords or integrity (refusal rule 4).
+**bcrypt fallback.** The [`bcrypt`](https://docs.rs/bcrypt) crate with `cost >= 12` is acceptable where Argon2 is unavailable, but bcrypt silently truncates input at **72 bytes** — prefer Argon2id. **Never MD5 or SHA-1** for passwords or integrity (FCS-CRYPTO-001; passwords also FCS-SECRET-001).
 
 **Encrypted two-way — PAN / IBAN / national ID.** Use **AES-256-GCM** (authenticated encryption: confidentiality + tamper detection). Two audited options:
 
@@ -206,7 +206,7 @@ fn encrypt(data_key: &[u8; 32], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>,
 }
 ```
 
-**Key management & rotation.** Keys live in a KMS/HSM (AWS KMS, GCP KMS, Azure Key Vault, or a PKCS#11 HSM), never in source, `.env` committed to git, or repo config. Use envelope encryption (KMS-wrapped data keys). Rotate the KMS master key on schedule; store a key id/version with each ciphertext so old data stays decryptable through rotation. Transport is TLS 1.2+ with certificate validation on (`rustls` verifies by default) — never a custom `ServerCertVerifier` that accepts everything, and never `danger_accept_invalid_certs(true)` on `reqwest` in production (refusal rule 8).
+**Key management & rotation.** Keys live in a KMS/HSM (AWS KMS, GCP KMS, Azure Key Vault, or a PKCS#11 HSM), never in source, `.env` committed to git, or repo config. Use envelope encryption (KMS-wrapped data keys). Rotate the KMS master key on schedule; store a key id/version with each ciphertext so old data stays decryptable through rotation. Transport is TLS 1.2+ with certificate validation on (`rustls` verifies by default) — never a custom `ServerCertVerifier` that accepts everything, and never `danger_accept_invalid_certs(true)` on `reqwest` in production (FCS-SECRET-002).
 
 **Forbidden (refusal red lines):** MD5/SHA-1 for passwords or integrity, DES/3DES, AES-**ECB** mode, home-rolled crypto, static or hardcoded keys/IVs, nonce/IV reuse, reversible encryption of passwords, the `rand` crate's `thread_rng` for key/nonce material (use an OS CSPRNG / `OsRng`), non-constant-time comparison of secrets (use `subtle::ConstantTimeEq`), `f64` money, and silent integer-overflow on balances.
 

@@ -133,7 +133,7 @@ Audit logs must be tamper-evident:
   tampering. Use SHA-256 — never MD5/SHA-1 for integrity.
 - Restrict who can read audit logs (they contain actor/account data) and alert on any
   attempt to disable or delete them. Disabling audit logging on money movement is a
-  hard red line (see refusal policy rule 6).
+  hard red line (see FCS-AUDIT-001).
 
 ---
 
@@ -226,7 +226,7 @@ transaction.
 ### Onboarding / KYC variation
 
 Same backbone, different middle: validate identity input → run KYC/AML/sanctions
-screening (never skip it — refusal rule 5) → persist the *decision* and case id to the
+screening (never skip it — FCS-AML-001) → persist the *decision* and case id to the
 audit store → gate account activation on a passing decision. Store raw identity
 documents encrypted (below); log only the decision, not the document.
 
@@ -236,7 +236,7 @@ documents encrypted (below); log only the decision, not the document.
 
 The dividing line: **one-way hash things you only ever need to *verify*** (passwords);
 **two-way encrypt things you need to *read back*** (PAN, IBAN, national ID). Never use
-reversible encryption for passwords (refusal rule 2); never use a plain hash for data
+reversible encryption for passwords (FCS-SECRET-001); never use a plain hash for data
 you must recover.
 
 ### Hashed one-way — passwords & secrets at rest
@@ -244,7 +244,7 @@ you must recover.
 Use **`argon2-cffi`** (Argon2id). It is the OWASP-recommended, memory-hard,
 PHC-winning algorithm (RFC 9106). **`bcrypt`** is an acceptable fallback where Argon2
 is unavailable. **MD5 and SHA-1/SHA-2 are NOT password hashes** — a fast hash is
-crackable at billions/sec; using them for passwords is a red line (refusal rule 2/4).
+crackable at billions/sec; using them for passwords is a red line (FCS-SECRET-001, FCS-CRYPTO-001).
 
 **Parameters.** OWASP's current *minimum* for Argon2id is **memory 19 MiB, iterations
 (time cost) 2, parallelism 1**. The `argon2-cffi` `PasswordHasher()` defaults are
@@ -323,7 +323,7 @@ processor and keep only a token + masked PAN (see "Bad example" and PCI-DSS skil
   lazily.
 - Separate duties: the service that encrypts should not also be able to export master
   key material.
-- **Forbidden (red lines, refusal rule 4/7):** hardcoded keys or IVs, static/shared
+- **Forbidden (red lines, FCS-CRYPTO-001, FCS-SECRET-002):** hardcoded keys or IVs, static/shared
   nonces, **ECB mode**, DES/3DES, home-rolled crypto, MD5/SHA-1 for integrity or
   passwords, disabling TLS certificate validation (rule 8).
 
@@ -428,7 +428,7 @@ def pay(a, b, amount):
     # no audit record written at all                 # money moved invisibly (rule 6)
 ```
 
-**The red lines it crosses:** stores raw PAN and CVV (PCI-DSS, refusal rule 1);
+**The red lines it crosses:** stores raw PAN and CVV (PCI-DSS, FCS-PAN-001);
 "hashes" a password with MD5 (rules 2 & 4); logs PAN, CVV, and SSN (rule 3); uses
 binary `float` for money (silent rounding errors); moves funds with no transaction, no
 row lock, no idempotency key, and **no audit record** (rule 6 — bypassing audit on

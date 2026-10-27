@@ -69,10 +69,10 @@ Because `slog` calls `LogValue()` automatically, `slog.Info("charge", "customer"
 
 Canonical money-movement order, each step mapped to the Go mechanism that enforces it:
 
-1. **Authenticate + authorize** the caller. Check least-privilege role/scope before anything else (refusal rule 10). Carry identity + request-scoped values in `context.Context` (via a typed key), never in globals.
+1. **Authenticate + authorize** the caller. Check least-privilege role/scope before anything else (FCS-AUTHZ-001). Carry identity + request-scoped values in `context.Context` (via a typed key), never in globals.
 2. **Validate** amount (minor units, see Hashing/Money note), currency, accounts. Reject at the edge.
 3. **Idempotency gate.** Require an idempotency key on every mutating payment endpoint. Look it up first; if seen, return the stored result without re-executing. This is the single most important defence against double-charges on retries/timeouts in a high-throughput system.
-4. **AML / sanctions / KYC** screening on onboarding and on transfers where required. A hit is a `Warn` + audit + hold, never a silent pass (refusal rule 5).
+4. **AML / sanctions / KYC** screening on onboarding and on transfers where required. A hit is a `Warn` + audit + hold, never a silent pass (FCS-AML-001).
 5. **Open a DB transaction** with `BeginTx(ctx, ...)`; do the balance read, the invariant check, the debit/credit, **and the audit insert** inside the *same* transaction so they commit or roll back atomically.
 6. **Approval gate** for flows above threshold (dual control / maker-checker): write a pending record, require a second authorized principal to approve before the transfer posts.
 7. **Write the audit record** (actor, action, source/dest, amount, idempotency key, decision, timestamp, request id) to the append-only store *within* the transaction.
@@ -146,7 +146,7 @@ func HashPassword(pw string) (string, error) {
 }
 ```
 
-**bcrypt fallback.** `golang.org/x/crypto/bcrypt` with `cost >= 12` is acceptable where Argon2 is unavailable, but note bcrypt silently truncates input at **72 bytes** — pre-hash long/paraphrase inputs with SHA-256 before bcrypt, or prefer Argon2id. **Never MD5 or SHA-1** for passwords or integrity (refusal rule 4).
+**bcrypt fallback.** `golang.org/x/crypto/bcrypt` with `cost >= 12` is acceptable where Argon2 is unavailable, but note bcrypt silently truncates input at **72 bytes** — pre-hash long/paraphrase inputs with SHA-256 before bcrypt, or prefer Argon2id. **Never MD5 or SHA-1** for passwords or integrity (FCS-CRYPTO-001; passwords also FCS-SECRET-001).
 
 **Encrypted two-way — PAN / IBAN / national ID.** Use **AES-256-GCM** via `crypto/aes` + `crypto/cipher` (`cipher.NewGCM`), which gives authenticated encryption (confidentiality + tamper detection).
 
@@ -173,7 +173,7 @@ func Encrypt(dataKey, plaintext, aad []byte) ([]byte, error) {
 }
 ```
 
-**Key management & rotation.** Keys live in a KMS/HSM (AWS KMS, GCP KMS, Azure Key Vault, or PKCS#11 HSM), never in source, env files committed to git, or config in the repo. Use envelope encryption (KMS-wrapped data keys). Rotate the KMS master key on schedule; store a key id/version with each ciphertext so old data stays decryptable through rotation. Transport is TLS 1.2+ with certificate validation on (refusal rule 8) — never `InsecureSkipVerify: true` in production.
+**Key management & rotation.** Keys live in a KMS/HSM (AWS KMS, GCP KMS, Azure Key Vault, or PKCS#11 HSM), never in source, env files committed to git, or config in the repo. Use envelope encryption (KMS-wrapped data keys). Rotate the KMS master key on schedule; store a key id/version with each ciphertext so old data stays decryptable through rotation. Transport is TLS 1.2+ with certificate validation on (FCS-SECRET-002) — never `InsecureSkipVerify: true` in production.
 
 **Forbidden (refusal red lines):** MD5/SHA-1 for passwords or integrity, DES/3DES, AES-**ECB** mode, home-rolled crypto, static or hardcoded keys/IVs, nonce/IV reuse, reversible encryption of passwords, `math/rand` for anything security-sensitive (use `crypto/rand`), and non-constant-time comparison of secrets.
 

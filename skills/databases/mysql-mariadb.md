@@ -188,7 +188,7 @@ rolls back together.
 ### Onboarding / KYC variation
 
 Same backbone, different middle: validate identity input → run KYC/AML/sanctions
-screening in the app (never skip it — refusal rule 5) → store the **decision + case id**
+screening in the app (never skip it — FCS-AML-001) → store the **decision + case id**
 (not the raw document) → store any required identity document **encrypted** (below) →
 gate account activation on a passing decision. The audit row records the decision, not
 the document contents.
@@ -497,7 +497,7 @@ literal leakage into logs), **no PAN/CVV in the schema at all**, and a least-pri
 ```sql
 -- ❌ Bad — multiple red lines in one schema + transfer
 CREATE TABLE cards (
-  pan   VARCHAR(20),                       -- storing raw PAN (PCI red line, refusal rule 1)
+  pan   VARCHAR(20),                       -- storing raw PAN (PCI red line, FCS-PAN-001)
   cvv   VARCHAR(4),                         -- storing CVV after auth — forbidden
   pw_md5 CHAR(32)                           -- MD5 "password hash" — broken (rules 2 & 4)
 ) ENGINE=MyISAM;                            -- MyISAM: no transactions, no row locks
@@ -515,7 +515,7 @@ UPDATE accounts SET balance = balance + 19.99 WHERE id = 2;   -- separate stmts:
 -- (no audit row written at all — money moves invisibly, rule 6)
 ```
 
-**The red lines it crosses:** stores raw PAN and CVV (PCI-DSS, refusal rule 1); "hashes"
+**The red lines it crosses:** stores raw PAN and CVV (PCI-DSS, FCS-PAN-001); "hashes"
 a password with MD5 (rules 2 & 4); uses **ECB** with a **hardcoded key passed as a SQL
 literal** that the query log will capture (rules 4 & 7); puts financial data in **MyISAM**
 (no transactions, no row locks); uses `FLOAT`-style money (rounding drift); and moves

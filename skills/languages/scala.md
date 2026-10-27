@@ -98,7 +98,7 @@ Canonical money-movement step order, expressed as a composed effect (`IO`/`ZIO`/
 1. **Authenticate & authorize** — verify the caller owns/controls the source account before anything else. Fail closed (deny on any ambiguity).
 2. **Validate at the boundary** — explicit currency; amount as **`BigDecimal`** or minor-unit **`Long`** — **never `Double`/`Float`** (core rule). Parse into a refined/validated type (e.g. `Refined`, a smart constructor returning `Either`) so invalid money cannot reach the ledger.
 3. **Idempotency gate** — require a client `Idempotency-Key`; look it up first. If seen, return the stored result instead of re-executing. Persist the key **in the same transaction** as the effect, with a unique constraint, so a concurrent retry collides rather than double-spends.
-4. **Approval gates** — enforce maker-checker / dual control and limit thresholds (SCA step-up, sanctions/AML hold) **before** funds move. For onboarding, KYC/sanctions screening must pass before the account is usable (refusal rule 5).
+4. **Approval gates** — enforce maker-checker / dual control and limit thresholds (SCA step-up, sanctions/AML hold) **before** funds move. For onboarding, KYC/sanctions screening must pass before the account is usable (FCS-AML-001).
 5. **Execute inside one DB transaction** — debit source, credit destination, write the ledger entries, and write the **audit record** atomically (`.transactionally` in Slick, a single `ConnectionIO` `.transact` in Doobie). If anything fails the whole unit rolls back; an audit row must never persist for a transfer that didn't happen, and vice versa.
 6. **Audit record** — who (actor), what (action), when (server UTC), source, destination, amount+currency, idempotency key, before/after balances. Append-only (see Log integrity).
 7. **Emit event / notify** — only **after commit**. Never call an external API *inside* the DB transaction (it holds the connection and can leave you committed-but-un-notified or rolled-back-after-side-effect); use a transactional outbox or an `AFTER_COMMIT` hook.
@@ -194,7 +194,7 @@ final class AesGcm[F[_]](implicit F: Sync[F]) {
 
 **Spark note:** do column-level crypto with a KMS-backed UDF, or tokenize upstream — do not ship the master key into executors. For files at rest, use the store's encryption (e.g. Parquet modular encryption + KMS, or bucket SSE-KMS), not home-rolled per-column ciphers.
 
-**Forbidden (refusal rule 4):** hardcoded keys/IVs, static or reused IVs, `AES/ECB/*`, `DES`/`3DES`, `"AES"` with no explicit mode (JCE defaults to **ECB** — a trap), home-rolled crypto, `scala.util.Random`/`Math.random()` for keys or IVs (use `SecureRandom`), disabling TLS/cert validation for data in transit (rule 8). TLS 1.2+ for all sensitive transport.
+**Forbidden (FCS-CRYPTO-001):** hardcoded keys/IVs, static or reused IVs, `AES/ECB/*`, `DES`/`3DES`, `"AES"` with no explicit mode (JCE defaults to **ECB** — a trap), home-rolled crypto, `scala.util.Random`/`Math.random()` for keys or IVs (use `SecureRandom`), disabling TLS/cert validation for data in transit (rule 8). TLS 1.2+ for all sensitive transport.
 
 ## Country differences (how the same Scala code changes)
 

@@ -1,0 +1,23 @@
+{
+  "profile_id": "eu-bookkeeping-vendor",
+  "description": "An EU-based software vendor that sells bookkeeping SaaS to obliged entities but is NOT itself an obliged entity. It does not inherit its customers' AML duties. Example profile.",
+  "entity_role": {
+    "kind": "vendor_to_obliged_entity",
+    "activity": "bookkeeping SaaS",
+    "declared": true
+  },
+  "jurisdictions": ["EU"],
+  "data_categories": ["pii_identity", "transaction_records", "support_logs", "marketing_consent"],
+  "payment_providers": [],
+  "stack": {
+    "languages": ["javascript-typescript"],
+    "databases": ["postgresql"],
+    "detected": true
+  },
+  "assumptions": [
+    "Vendor role is declared: the vendor does NOT perform KYC/AML screening itself, so FCS-AML-001 applicability is its customers', not the vendor's.",
+    "No card data (no pan/sad categories); FCS-PAN-001/FCS-SAD-001 do not apply to this profile.",
+    "GDPR data-subject rights apply to pii_identity and marketing_consent; transaction_records may carry a legal-hold retention conflict modeled per category."
+  ],
+  "overlays": []
+}
