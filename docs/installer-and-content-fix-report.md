@@ -204,7 +204,7 @@ migration (G2/G3) and AGENTS.md write (G4) were not as safe as the prior report 
 
 ## Remaining blockers
 
-- **CI result for the final commit (`1dd106c`) must be confirmed on GitHub Actions**
+- **CI result for the final branch head (G1-G4 code is in `1d5f500`; this doc commit sits on top) must be confirmed on GitHub Actions**
   after the branch is pushed. Local runs pass; the cross-platform/Node-matrix result is
   only authoritative from Actions on that exact commit.
 - Open follow-ups (out of scope here): compile-and-run a real .NET + PostgreSQL
