@@ -2,8 +2,10 @@
   "schema_version": "1.0",
   "project": "fintech-compliance-skills",
   "branch": "fintech-skills-evolution",
-  "base_branch": "installer-content-hardening",
-  "base_is_pr7_unmerged": true,
+  "base_branch": "main",
+  "base_is_pr7_unmerged": false,
+  "pr7_merged_commit": "4a8e6d40108b9e87364f008f3b7117bb7761e158",
+  "pr8_status": "ready_for_review (base retargeted to main after PR #7 merged)",
   "frozen_reference_commit": "6fc6e9be03f85cd743b99bc7ca1c7a3ca9d2b601",
   "validated_commit": "c248fb68a7e36e77927bb0c338dc0638b1529254",
   "inventory": {
