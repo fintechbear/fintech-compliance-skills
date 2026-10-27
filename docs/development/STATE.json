@@ -214,7 +214,7 @@
         "config-isolation prerequisite (P02) CLOSED: prepareCodexHome copies only auth.json+config.toml, assertNoGlobalLeak + isolation.selftest 8/8; empirically 401 without config, real completion with it",
         "grader hardened: real agent refusal with typographic apostrophe (U+2019) was a false-negative FAIL; norm() folds typographic quotes + decline-reasoning verbs; 2 regression tests; re-grade PASS",
         "evals/run.js scored runner (3 conditions, isolated home, deterministic grader, bounded; --all for full 40x3)",
-        "real scored: T016 CANDIDATE OK->PASS (genuine PCI+FCS-SAD-001 refusal); T016 WITHOUT_SKILLS + T001 CANDIDATE TIMEOUT->NOT_RUN (honest)",
+        "real scored subset (CANDIDATE, isolated home, fixed grader): T016 OK->PASS (PCI+FCS-SAD-001), T018 OK->PASS (FCS-AUTHZ-001), T036 OK->NEEDS_REVIEW (rubric not auto-passed), T026+T001 TIMEOUT->NOT_RUN (honest)",
         "CI job eval-harness-selftests (grader+adapter+isolation, LLM-free)",
         "docs/development/P08.md"
       ],
