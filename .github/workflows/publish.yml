@@ -1,16 +1,20 @@
 name: Publish to npm
 
-# Publishes the package when you push a version tag (e.g. v1.0.0),
-# or when you run this workflow by hand from the Actions tab.
+# Publishes the package when you push a version tag (e.g. v1.0.0), or on manual dispatch.
 #
-# Authentication (the workflow supports BOTH):
-#   1. Trusted Publishing (OIDC) — no secrets. Requires the package to exist on npm once
-#      and a Trusted Publisher configured on npmjs.com for this repo + workflow.
-#   2. Automation token — set a repo secret named NPM_TOKEN (works for the first publish).
-# If NPM_TOKEN is set it is used; otherwise the job relies on OIDC.
+# Auth (both supported): OIDC Trusted Publishing (no secrets; requires the package to
+# exist once on npm AND a Trusted Publisher configured for this repo+workflow on
+# npmjs.com), or an NPM_TOKEN repo secret. If NPM_TOKEN is set it is used; else OIDC.
 #
-# The quality gate (verify + test) runs BEFORE publish on the SAME checkout, so the
-# artifact that is published is the one that passed. A failing gate stops the job.
+# OIDC runtime: npm's trusted-publishing path needs a recent npm (OIDC + provenance).
+# We run Node 24, which ships an npm new enough for OIDC, and LOG + ASSERT the actual
+# versions at run time rather than trusting a hard-coded claim. The exact minimum
+# (reported as Node >=22.14.0 / npm >=11.5.1) was NOT confirmed from a primary source in
+# this cycle — see docs/development/P01.md (NEEDS_REVIEW). Node 24 clears any of those.
+#
+# The quality gate runs BEFORE publish on the SAME checkout; the published artifact is
+# the one that passed. NOTE: configuring the Trusted Publisher on the npm account is a
+# manual, out-of-band step that was NOT performed/tested here (BLOCKED).
 
 on:
   push:
@@ -31,8 +35,15 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'          # current LTS; npm >= 10 supports OIDC/provenance
+          node-version: '24'          # ships npm new enough for OIDC + provenance
           registry-url: 'https://registry.npmjs.org'
+
+      - name: Log + assert OIDC-capable runtime
+        shell: bash
+        run: |
+          echo "node: $(node --version)   npm: $(npm --version)"
+          # fail early if npm is too old for OIDC trusted publishing
+          node -e 'const s=require("child_process").execSync("npm --version").toString().trim();const [a,b,c]=s.split(".").map(Number);const ok=(a>11)||(a===11&&(b>5||(b===5&&c>=1)));if(!ok){console.error("npm "+s+" < 11.5.1 (OIDC requirement)");process.exit(1)}console.log("npm "+s+" satisfies >=11.5.1")'
 
       - name: Verify package version matches the tag
         if: startsWith(github.ref, 'refs/tags/v')
@@ -46,7 +57,6 @@ jobs:
             exit 1
           fi
 
-      # Lockfile is committed: `npm ci` and let a mismatch fail (no ||install mask).
       - name: Install dev dependencies (npm ci)
         run: npm ci
 
@@ -55,8 +65,19 @@ jobs:
           npm run verify
           npm test
 
-      - name: Publish
-        run: npm publish --access public --provenance
+      - name: Pack once and verify the artifact installs from the tarball
+        shell: bash
+        run: |
+          TGZ=$(npm pack --silent | tail -1)
+          echo "artifact: $TGZ"
+          sha256sum "$TGZ"
+          mkdir -p /tmp/verify && tar -xzf "$TGZ" -C /tmp/verify
+          node /tmp/verify/package/installer/index.js --tool claude --target /tmp/pkgtest --home /tmp/pkgtest >/dev/null
+          echo "packaged install OK ($(ls /tmp/pkgtest/.claude/skills | wc -l) skills)"
+          echo "FCS_TGZ=$TGZ" >> "$GITHUB_ENV"
+
+      - name: Publish (the same packed artifact)
+        run: npm publish "$FCS_TGZ" --access public --provenance
         env:
           # Present only if you added the NPM_TOKEN secret; empty string => OIDC path.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

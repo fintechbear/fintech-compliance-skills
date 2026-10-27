@@ -78,7 +78,7 @@ await Check("concurrency: 20 identical same-key requests => one posted, rest rep
 });
 
 // ---- concurrency: balance race, DIFFERENT keys, insufficient funds must not go negative ----
-await Check("concurrency: competing debits never overdraw (no negative balance)", async () => {
+await Check("concurrency: competing debits never overdraw AND at least one succeeds", async () => {
     var rA = await Seed(cs, T1, "USD", 10_00, actor, canDebit: true); // only 10.00 available
     var sinks = new List<Guid>();
     for (int i = 0; i < 15; i++) sinks.Add(await Seed(cs, T1, "USD", 0, actor, canDebit: true));
@@ -87,7 +87,11 @@ await Check("concurrency: competing debits never overdraw (no negative balance)"
     var results = await Task.WhenAll(tasks);
     int posted = results.Count(r => r.Outcome == Outcome.Posted);
     long bal = await bank.Balance(T1, rA);
-    return bal >= 0 && bal == 10_00 - posted * 1_00 && posted <= 10;
+    long credited = 0; foreach (var s in sinks) credited += await bank.Balance(T1, s);
+    // REQUIRED: progress was made (posted>=1 — a run of all-failures is a FAIL, not a pass);
+    // money conserved (source debited == sinks credited); never negative; ceiling respected.
+    return posted >= 1 && posted <= 10 && bal >= 0
+        && bal == 10_00 - posted * 1_00 && credited == posted * 1_00;
 });
 
 // ---- insufficient funds (simple) ----
@@ -105,9 +109,49 @@ await Check("atomicity: posted transfer has matching audit + idempotency rows", 
     var res = await bank.Transfer(T1, actor, akey, new(p, q, 3m, "USD"));
     if (res.Outcome != Outcome.Posted) return false;
     await using var conn = new NpgsqlConnection(cs); await conn.OpenAsync();
-    long audits = (long)(await new NpgsqlCommand($"SELECT count(*) FROM audit_events WHERE idem_key='{akey}'", conn).ExecuteScalarAsync())!;
-    long idem = (long)(await new NpgsqlCommand($"SELECT count(*) FROM idempotency WHERE key='{akey}'", conn).ExecuteScalarAsync())!;
+    long audits = (long)(await Count(conn, "audit_events", "idem_key", akey))!;
+    long idem = (long)(await Count(conn, "idempotency", "key", akey))!;
     return audits == 1 && idem == 1 && await bank.Balance(T1, q) == 3_00;
+});
+
+// ---- P01-C: rollback atomicity — a failure AFTER the writes but BEFORE commit must leave NOTHING ----
+await Check("rollback: fault after writes/before commit leaves no transfer/audit/idempotency and balances unchanged", async () => {
+    var p = await Seed(cs, T1, "USD", 10_00, actor, canDebit: true);
+    var q = await Seed(cs, T1, "USD", 0, actor, canDebit: true);
+    var rkey = k();
+    FcsHarness.FaultHooks.AfterWritesBeforeCommit = () => throw new Exception("INJECTED pre-commit fault");
+    bool threw = false;
+    try { await bank.Transfer(T1, actor, rkey, new(p, q, 4m, "USD")); }
+    catch (Exception ex) when (ex.Message.Contains("INJECTED")) { threw = true; }
+    finally { FcsHarness.FaultHooks.Reset(); }
+    if (!threw) return false;
+    await using var conn = new NpgsqlConnection(cs); await conn.OpenAsync();
+    long t = (long)(await Count(conn, "transfers", "idem_key", rkey))!;
+    long a = (long)(await Count(conn, "audit_events", "idem_key", rkey))!;
+    long i = (long)(await Count(conn, "idempotency", "key", rkey))!;
+    // nothing persisted, and both balances are exactly as seeded (debit rolled back too)
+    return t == 0 && a == 0 && i == 0 && await bank.Balance(T1, p) == 10_00 && await bank.Balance(T1, q) == 0;
+});
+
+// ---- P01-6: post-commit response loss — retry with same key replays, single financial effect ----
+await Check("post-commit retry: response lost after commit; same-key retry replays; one effect", async () => {
+    var p = await Seed(cs, T1, "USD", 10_00, actor, canDebit: true);
+    var q = await Seed(cs, T1, "USD", 0, actor, canDebit: true);
+    var pkey = k();
+    // first call commits durably, then the "response is lost" (fault after commit)
+    FcsHarness.FaultHooks.AfterCommitBeforeResponse = () => throw new Exception("INJECTED response-loss");
+    bool lost = false;
+    try { await bank.Transfer(T1, actor, pkey, new(p, q, 2m, "USD")); }
+    catch (Exception ex) when (ex.Message.Contains("INJECTED")) { lost = true; }
+    finally { FcsHarness.FaultHooks.Reset(); }
+    if (!lost) return false;
+    // the effect is already durable: balance moved, one transfer row exists
+    bool durable = await bank.Balance(T1, q) == 2_00 && await bank.CountTransfers(T1, pkey) == 1;
+    // client retries with the SAME key -> must replay, not double-spend
+    var retry = await bank.Transfer(T1, actor, pkey, new(p, q, 2m, "USD"));
+    bool replayed = retry.Outcome == Outcome.Replayed;
+    bool oneEffect = await bank.CountTransfers(T1, pkey) == 1 && await bank.Balance(T1, q) == 2_00;
+    return durable && replayed && oneEffect;
 });
 
 Console.WriteLine($"\n=== HARNESS SUMMARY: pass={pass} fail={fail} ===");
@@ -116,6 +160,14 @@ Environment.Exit(0);
 
 // ---------- helpers ----------
 static string k() => Guid.NewGuid().ToString("N");
+
+static async Task<object> Count(NpgsqlConnection conn, string table, string col, string val)
+{
+    // table/col are literals from test code (not user input); val is parameterized.
+    await using var cmd = new NpgsqlCommand($"SELECT count(*) FROM {table} WHERE {col}=@v", conn);
+    cmd.Parameters.AddWithValue("v", val);
+    return (await cmd.ExecuteScalarAsync())!;
+}
 
 static async Task<Guid> Seed(string cs, Guid tenant, string ccy, long balMinor, Guid grantPrincipal, bool canDebit)
 {

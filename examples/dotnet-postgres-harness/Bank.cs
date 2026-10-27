@@ -113,7 +113,15 @@ public sealed class Bank(string connString)
                 await Exec(conn, tx, "INSERT INTO idempotency(tenant_id,operation,key,fingerprint,transfer_id) VALUES(@t,'transfers.create',@k,@fp,@tr)", ct,
                     ("t", tenantId), ("k", idemKey), ("fp", fingerprint), ("tr", transferId));
 
+                // TEST-SURFACE fault injection: fail AFTER the debit/credit/audit/idempotency writes
+                // but BEFORE commit, to prove the whole unit rolls back together (nothing persists).
+                if (FaultHooks.AfterWritesBeforeCommit is not null) FaultHooks.AfterWritesBeforeCommit();
+
                 await tx.CommitAsync(ct);
+
+                // TEST-SURFACE fault injection: simulate the response being lost AFTER a durable commit,
+                // so a retry with the same key must replay the stored result (one financial effect).
+                if (FaultHooks.AfterCommitBeforeResponse is not null) FaultHooks.AfterCommitBeforeResponse();
                 return new(Outcome.Posted, transferId);
             }
             catch (PostgresException pg) when (pg.SqlState == "23505") // unique violation â€” PostgreSQL, not SQL Server 2601/2627
@@ -194,4 +202,15 @@ public sealed class Bank(string connString)
         cmd.Parameters.AddWithValue("t", tenant); cmd.Parameters.AddWithValue("k", idemKey);
         return (int)(long)(await cmd.ExecuteScalarAsync())!;
     }
+}
+
+// TEST-SURFACE ONLY fault-injection hooks. Null in normal runs. The harness sets these to
+// force a failure at a precise point (after writes/before commit; after commit/before
+// response) to prove rollback atomicity and post-commit retry safety on a REAL database.
+// They live on the test surface, not in any production path.
+public static class FaultHooks
+{
+    public static Action? AfterWritesBeforeCommit;
+    public static Action? AfterCommitBeforeResponse;
+    public static void Reset() { AfterWritesBeforeCommit = null; AfterCommitBeforeResponse = null; }
 }

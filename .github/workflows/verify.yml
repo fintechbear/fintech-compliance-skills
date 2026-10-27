@@ -1,7 +1,8 @@
 name: Verify
 
 # Quality gate: runs on every push and PR. Proves the installer still produces
-# resolvable, parseable, idempotent, migration-safe output before merge or release.
+# resolvable, parseable, idempotent, migration-safe output, and that the .NET +
+# PostgreSQL rule harness passes against a real database, before merge or release.
 
 on:
   push:
@@ -10,20 +11,21 @@ on:
   workflow_dispatch: {}
 
 jobs:
-  verify:
+  # Installer suite across OS + Node. 22/24 are the primary supported line; 18/20 are
+  # kept this round as legacy-compatibility legs.
+  installer:
+    name: installer (${{ matrix.os }}, node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        # Must cover the minimum declared in package.json engines (>=18) and a current LTS.
-        node: ['18', '20', '22']
+        node: ['18', '20', '22', '24']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      # Lockfile is committed: use `npm ci` and let a mismatch FAIL (no ||install mask).
       - name: Install dev dependencies (npm ci)
         run: npm ci
       - name: Structural checks
@@ -32,3 +34,36 @@ jobs:
         run: npm test
       - name: Package contents sanity
         run: npm pack --dry-run
+
+  # Real PostgreSQL + .NET rule harness. Uses a service container (loopback-only) and the
+  # repo's .NET harness; no mocks. Also runs the shell control-flow fault test.
+  harness:
+    name: dotnet-postgres-harness (ubuntu)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: fcs
+          POSTGRES_PASSWORD: fcs
+          POSTGRES_DB: fcs
+        ports:
+          - 127.0.0.1:55432:5432
+        options: >-
+          --health-cmd "pg_isready -U fcs -d fcs"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Run rule harness against real PostgreSQL
+        working-directory: examples/dotnet-postgres-harness
+        env:
+          PGCONN: "Host=127.0.0.1;Port=55432;Username=fcs;Password=fcs;Database=fcs"
+          DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+          DOTNET_NOLOGO: '1'
+        run: dotnet run -c Release
+      - name: Shell control-flow fault test (fake shims; not a real DB run)
+        working-directory: examples/dotnet-postgres-harness
+        run: bash test-run-sh.sh
