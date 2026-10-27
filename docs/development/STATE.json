@@ -161,5 +161,13 @@
     "installer_test": "27/27 PASS",
     "ran_on": "windows",
     "node": "v24.14.1"
-  }
+  },
+  "ci": {
+    "run_id": "40496587850",
+    "head_sha": "5799e898b4b8a7c7fd5672cefa01fe4cba8f45a4",
+    "conclusion": "success",
+    "jobs": "installer 18/20/22/24 x ubuntu/windows (8) + dotnet-postgres-harness (real postgres:16 service) all success",
+    "url": "https://github.com/fintechbear/fintech-compliance-skills/actions/runs/40496587850"
+  },
+  "draft_pr": "https://github.com/fintechbear/fintech-compliance-skills/pull/8"
 }
