@@ -155,12 +155,25 @@
     },
     {
       "id": "P06",
-      "status": "TODO",
+      "status": "PASS",
       "depends_on": [
         "P05"
       ],
-      "evidence": [],
-      "blockers": []
+      "evidence": [
+        "controls: +FCS-REFUND/REFUNDTERM/RETAIN/ERASE/PRREVIEW-001 (23 total)",
+        "skills/core/fintech-refund-cancel.md + fintech-retention-erasure.md + fintech-pr-review.md",
+        "examples/ts-postgres-harness/{refund,retention}.ts: real PostgreSQL 16.15 (debian-test) transfer 17 + webhook 9 + ledger 7 + refund 9 + retention 7 = 49/49, harness exit=0",
+        "refund cap serialized under FOR UPDATE (5 concurrent 300-refunds on 1000 cap => 3 confirm, 900 <= cap); unknown outcome pending, not re-sent",
+        "retention per-category by legal basis; over-retention vs over-deletion checked separately; crypto-shred not claimed as universal erasure",
+        "installer/verify.js all pass (34 referenced files), installer 27/27, validate-controls controls:23 skills:33 errors:0",
+        "docs/development/P06.md"
+      ],
+      "blockers": [
+        "provider is a labelled test double, not a real sandbox (by design)",
+        "retention durations are DEMO values, not cited regulation (category reasoning is the control)",
+        "fintech-pr-review is a discipline with no deterministic harness; qualitative eval deferred to P08"
+      ],
+      "validated_commit": "7bd85a8"
     },
     {
       "id": "P07",

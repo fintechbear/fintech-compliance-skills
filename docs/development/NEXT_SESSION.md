@@ -15,24 +15,22 @@
   container; **no system Node** (use `node:NN` containers), **no agent CLI**.
 - Private connection details are NOT in the repo; they were provided out of band.
 
-## Next phase: P06
+## Next phase: P07
 
-P05 is PASS (commit e2d2ae1): provider/webhook + ledger/reconciliation skills + controls
-(FCS-OUTBOX/WEBHOOK/OUTCOME/LEDGER/RECON-001); TS references on real PostgreSQL 16.15 —
-transfer 17 + webhook 9 + ledger 7 = **33/33, exit 0**. installer router now lists core task
-skills; installer 27/27; CI green.
+P06 is PASS (commit 7bd85a8): refund/cancel + retention/erasure + financial-PR-review skills
++ controls (FCS-REFUND/REFUNDTERM/RETAIN/ERASE/PRREVIEW-001, 23 total); TS references on real
+PostgreSQL 16.15 — transfer 17 + webhook 9 + ledger 7 + refund 9 + retention 7 = **49/49,
+exit 0**. installer 27/27; validate-controls 23 controls / 33 skills / 0 errors; verify.js all
+pass.
 
-P06 = three narrow workflow entries, each independently triggerable (no single mega-skill):
-(A) refund/cancel (source payment + tenant + lifecycle; partial/full; never exceed paid;
-concurrent refunds cap; unknown-outcome double-refund prevention; cancel/void/reversal/refund
-are provider-specific terms, not universal synonyms); (B) retention/erasure (data-category
-based legal basis; legal hold vs mandatory financial retention vs erasable profile data;
-crypto-shredding is NOT a universal legal erasure guarantee; over-retention AND over-deletion
-tested separately; durations are demo data, not cited regulation); (C) financial PR review
-(new code vs changed risk surface; per-finding control id + file/line + trigger + evidence +
-confidence + review limits; no unverified finding or automatic compliance score; update the
-README "not a scanner" line consistently). Qualitative review beyond deterministic tests is
-NEEDS_REVIEW / real-agent, not auto-passed.
+P07 = CLI diagnostics. A small, zero-/low-dependency diagnostic the installer ships (or a
+`controls/` script) that a developer runs to self-check their install: which targets are
+present (claude/kiro/kiro-crew/codex), whether managed blocks are current vs drifted, whether
+every skill's FCS-id references resolve to the catalog, and whether any legacy numbered
+citation has crept back. It must be HONEST about what it cannot check (it is a static
+self-check, not a runtime compliance audit — reuse the "not a scanner" framing). Wire it into
+CI as its own job if deterministic. Qualitative/agent-side checks stay NEEDS_REVIEW for P08.
+
 ## How to run things
 
 - Installer tests: `npm ci && node installer/verify.js && node --test installer/test.js`.
