@@ -117,12 +117,21 @@
     },
     {
       "id": "P04",
-      "status": "TODO",
+      "status": "PASS",
       "depends_on": [
         "P03"
       ],
-      "evidence": [],
-      "blockers": []
+      "evidence": [
+        "skills/core/fintech-transfer.md (task-focused, explicit name/description, references controls by FCS id)",
+        "examples/ts-postgres-harness/ TS+pg reference: 17/17 pass on real PostgreSQL 16.15 (debian-test, node:20 container), exit 0",
+        "installer/test.js F04/F04b now fixture-derived inventory (no hard-coded 26); installer 27/27",
+        "docs/development/P04.md",
+        "CI run 40527914754 (5debe0a) success"
+      ],
+      "blockers": [
+        "CANDIDATE agent eval of transfer tasks NOT_RUN (deferred to P08; bounded Codex runtime)"
+      ],
+      "validated_commit": "5debe0a4b9d2a530f02a8f9bed859c373314fa0e"
     },
     {
       "id": "P05",

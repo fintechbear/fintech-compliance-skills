@@ -15,18 +15,21 @@
   container; **no system Node** (use `node:NN` containers), **no agent CLI**.
 - Private connection details are NOT in the repo; they were provided out of band.
 
-## Next phase: P04
+## Next phase: P05
 
-P03 is PASS: control catalog (`controls/catalog.json`, 13 FCS controls), schema, two example
-profiles, and the 58 broken `refusal rule N` citations migrated to permanent FCS ids
-(`controls/validate-controls.js` is the CI gate). Legal source_refs are needs_review.
+P04 is PASS (commit 5debe0a): `skills/core/fintech-transfer.md` (task-focused, FCS-id
+references, explicit metadata); `examples/ts-postgres-harness/` TS+pg reference proving the
+same contract as the .NET one — **17/17 on real PostgreSQL 16.15** (debian-test). installer
+F04/F04b now fixture-derived (no hard-coded 26); installer 27/27; CI green.
 
-P04 = on-demand loading + safe migration + transfer workflow skill. Build a short
-`fintech-transfer` SKILL.md that references controls by FCS id and names when to read the
-language/DB/region file; keep canonical content single-sourced; add explicit name/description
-metadata; preserve installer manifest/edit-protection/atomicity; add a TypeScript/PostgreSQL
-transfer reference alongside the existing .NET one; run the transfer eval tasks as CANDIDATE
-if a runtime is usable (else BLOCKED, deterministic tests still run).
+P05 = webhook / ambiguous provider outcome / ledger / reconciliation. Add two small task
+entries (provider+webhook; ledger+reconciliation) that reference controls by FCS id. Durable
+intent/outbox before the provider call; outbound idempotency key; webhook signature on raw
+body; durable inbox + dedup via DB constraint; UnknownOutcome is NOT auto-failed and never
+blind-retried; small double-entry ledger (balanced per currency, append-only, reversal
+entries); reconciliation examples (missing/duplicate/delayed/amount-mismatch). Prove on real
+DB; a provider test-double is allowed but must be labelled as such, not a real Stripe sandbox.
+Do NOT build a new commercial connector or recon-engine product in this repo.
 ## How to run things
 
 - Installer tests: `npm ci && node installer/verify.js && node --test installer/test.js`.
