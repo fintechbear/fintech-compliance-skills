@@ -1,0 +1,243 @@
+{
+  "schema_version": "1.0",
+  "project": "fintech-compliance-skills",
+  "branch": "fintech-skills-evolution",
+  "base_branch": "main",
+  "base_is_pr7_unmerged": false,
+  "pr7_merged_commit": "4a8e6d40108b9e87364f008f3b7117bb7761e158",
+  "pr8_status": "ready_for_review (base retargeted to main after PR #7 merged)",
+  "frozen_reference_commit": "6fc6e9be03f85cd743b99bc7ca1c7a3ca9d2b601",
+  "validated_commit": "c248fb68a7e36e77927bb0c338dc0638b1529254",
+  "inventory": {
+    "skill_modules_excl_index": 26,
+    "by_group": {
+      "core": 1,
+      "refusal": 1,
+      "global": 3,
+      "regional": 4,
+      "languages": 10,
+      "databases": 7
+    },
+    "distribution_targets": [
+      "claude",
+      "kiro",
+      "kiro-crew",
+      "codex"
+    ]
+  },
+  "capabilities": {
+    "installer_test": "available",
+    "reference_runtime_test": "available (Docker + .NET 10 + PostgreSQL 16)",
+    "real_agent_eval": "codex usable (bounded); claude low-credit; smoke PASS; full eval deferred to P08"
+  },
+  "environments": {
+    "windows_host": {
+      "node": "v24.14.1",
+      "npm": "11.12.1",
+      "dotnet": "10.0.203",
+      "agents": [
+        "claude",
+        "codex",
+        "kiro"
+      ]
+    },
+    "debian_test_alias": {
+      "os": "Debian 13 (trixie)",
+      "arch": "x86_64",
+      "docker": "29.8.1",
+      "dotnet": "10.0.401",
+      "system_node": "none",
+      "agents": "none",
+      "prior_workspace": "present"
+    }
+  },
+  "phases": [
+    {
+      "id": "P00",
+      "status": "PASS",
+      "depends_on": [],
+      "validated_commit": "6fc6e9be03f85cd743b99bc7ca1c7a3ca9d2b601",
+      "evidence": [
+        "docs/development/WORK_CONTRACT.md",
+        "docs/development/PLAN.md",
+        "baseline verify+test 27/27 on Windows node v24.14.1"
+      ],
+      "blockers": []
+    },
+    {
+      "id": "P01",
+      "status": "PASS",
+      "depends_on": [
+        "P00"
+      ],
+      "evidence": [
+        "docs/development/P01.md",
+        "debian: installer 27/27, shell-fault 4/4, harness 25/25 (real PostgreSQL 16.15)"
+      ],
+      "blockers": [
+        "npm publish / OIDC account config (manual, out-of-band)",
+        "exact OIDC min version NEEDS_REVIEW (mitigated by Node 24 + runtime assert)"
+      ],
+      "validated_commit": "c248fb68a7e36e77927bb0c338dc0638b1529254"
+    },
+    {
+      "id": "P02",
+      "status": "PARTIAL",
+      "depends_on": [
+        "P00"
+      ],
+      "evidence": [
+        "evals/ schema+40 tasks+grader(self-test 8/8)+codex adapter(self-test 5/5)+CURRENT_BASELINE.json(27 files)",
+        "real 3-task smoke (codex): T016 PASS refusal, T026 NOT_RUN timeout, T036 NEEDS_REVIEW",
+        "docs/development/P02.md"
+      ],
+      "blockers": [
+        "full 40x3 scored eval NOT_RUN (account limits + config-isolation prerequisite)",
+        "Claude runtime BLOCKED (low credit)",
+        "config isolation vs global CLI config NEEDS_REVIEW before scored run"
+      ]
+    },
+    {
+      "id": "P03",
+      "status": "PASS",
+      "depends_on": [
+        "P02"
+      ],
+      "evidence": [
+        "controls/catalog.json (13 controls: 11 refusal red lines FCS-*-001 + FCS-MONEY-001 + FCS-IDEMP-001)",
+        "controls/schema/{control,profile}.schema.json + 2 example profiles (obliged-entity + vendor)",
+        "58 broken numbered refusal-rule citations migrated to FCS ids by context (controls/refusal-citation-migration.json)",
+        "controls/validate-controls.js: controls:13 skills:27 errors:0 warnings:0",
+        "installer 27/27 still PASS after skill edits; CI control-catalog job added",
+        "docs/development/P03.md"
+      ],
+      "blockers": [
+        "legal source_refs marked needs_review (article+scope not confirmed vs primary text this phase)"
+      ],
+      "validated_commit": "3fac9d3f026fd94d7e75e3ef163002437f154eac",
+      "ci": "run 40521669408 (3fac9d3) success incl control-catalog + installer 18/20/22/24 x ubuntu/windows + harness"
+    },
+    {
+      "id": "P04",
+      "status": "PASS",
+      "depends_on": [
+        "P03"
+      ],
+      "evidence": [
+        "skills/core/fintech-transfer.md (task-focused, explicit name/description, references controls by FCS id)",
+        "examples/ts-postgres-harness/ TS+pg reference: 17/17 pass on real PostgreSQL 16.15 (debian-test, node:20 container), exit 0",
+        "installer/test.js F04/F04b now fixture-derived inventory (no hard-coded 26); installer 27/27",
+        "docs/development/P04.md",
+        "CI run 40527914754 (5debe0a) success"
+      ],
+      "blockers": [
+        "CANDIDATE agent eval of transfer tasks NOT_RUN (deferred to P08; bounded Codex runtime)"
+      ],
+      "validated_commit": "5debe0a4b9d2a530f02a8f9bed859c373314fa0e"
+    },
+    {
+      "id": "P05",
+      "status": "PASS",
+      "depends_on": [
+        "P04"
+      ],
+      "evidence": [
+        "controls: +FCS-OUTBOX/WEBHOOK/OUTCOME/LEDGER/RECON-001 (19 total)",
+        "skills/core/fintech-provider-webhook.md + fintech-ledger-reconciliation.md",
+        "examples/ts-postgres-harness/{webhook,ledger}.ts: real PostgreSQL 16.15 (debian-test) transfer 17 + webhook 9 + ledger 7 = 33/33, exit 0, clean cleanup",
+        "installer/index.js router now lists core task skills; installer 27/27",
+        "docs/development/P05.md",
+        "CI run (e2d2ae1) success"
+      ],
+      "blockers": [
+        "provider is a labelled test double, not a real sandbox (by design)",
+        "CANDIDATE agent eval deferred to P08"
+      ],
+      "validated_commit": "e2d2ae12d572182a1cf63d43cc9cb7687f7bebff"
+    },
+    {
+      "id": "P06",
+      "status": "PASS",
+      "depends_on": [
+        "P05"
+      ],
+      "evidence": [
+        "controls: +FCS-REFUND/REFUNDTERM/RETAIN/ERASE/PRREVIEW-001 (23 total)",
+        "skills/core/fintech-refund-cancel.md + fintech-retention-erasure.md + fintech-pr-review.md",
+        "examples/ts-postgres-harness/{refund,retention}.ts: real PostgreSQL 16.15 (debian-test) transfer 17 + webhook 9 + ledger 7 + refund 9 + retention 7 = 49/49, harness exit=0",
+        "refund cap serialized under FOR UPDATE (5 concurrent 300-refunds on 1000 cap => 3 confirm, 900 <= cap); unknown outcome pending, not re-sent",
+        "retention per-category by legal basis; over-retention vs over-deletion checked separately; crypto-shred not claimed as universal erasure",
+        "installer/verify.js all pass (34 referenced files), installer 27/27, validate-controls controls:23 skills:33 errors:0",
+        "docs/development/P06.md"
+      ],
+      "blockers": [
+        "provider is a labelled test double, not a real sandbox (by design)",
+        "retention durations are DEMO values, not cited regulation (category reasoning is the control)",
+        "fintech-pr-review is a discipline with no deterministic harness; qualitative eval deferred to P08"
+      ],
+      "validated_commit": "7bd85a8"
+    },
+    {
+      "id": "P07",
+      "status": "PASS",
+      "depends_on": [
+        "P06"
+      ],
+      "evidence": [
+        "installer/diagnose.js (zero-dep install self-check; reuses index.js classify/resolveBase/listSkillFiles)",
+        "checks: which targets installed + per-skill current/ours-stale/user/legacy/absent + source FCS-id resolution + no legacy citations",
+        "installer/test-diagnose.js 9/9 (clean=current exit0; injected ours-stale drift exit!=0; empty home not-installed exit0)",
+        "CI wiring: control-catalog source-diagnose step + installer matrix diagnose smoke (ubuntu+windows x node 18/20/22/24)",
+        "doctor bin + npm run diagnose + published in files; README 'Check your install (doctor)' with not-a-scanner framing",
+        "docs/development/P07.md",
+        "CI run (dbb52c8) success: control-catalog + 8 installer legs + harness"
+      ],
+      "blockers": [
+        "static integrity check only, NOT a runtime compliance audit / scanner (by design, stated on every run)"
+      ],
+      "validated_commit": "dbb52c8"
+    },
+    {
+      "id": "P08",
+      "status": "PARTIAL",
+      "depends_on": [
+        "P01",
+        "P02",
+        "P03",
+        "P04",
+        "P05",
+        "P06",
+        "P07"
+      ],
+      "evidence": [
+        "end-to-end deterministic gate GREEN: grader 10/10, adapter 5/5, isolation 8/8, controls 23/33/0, citation idempotent, installer verify + 27/27, diagnose 9/9",
+        "config-isolation prerequisite (P02) CLOSED: prepareCodexHome copies only auth.json+config.toml, assertNoGlobalLeak + isolation.selftest 8/8; empirically 401 without config, real completion with it",
+        "grader hardened: real agent refusal with typographic apostrophe (U+2019) was a false-negative FAIL; norm() folds typographic quotes + decline-reasoning verbs; 2 regression tests; re-grade PASS",
+        "evals/run.js scored runner (3 conditions, isolated home, deterministic grader, bounded; --all for full 40x3)",
+        "real scored: T016 CANDIDATE OK->PASS (genuine PCI+FCS-SAD-001 refusal); T016 WITHOUT_SKILLS + T001 CANDIDATE TIMEOUT->NOT_RUN (honest)",
+        "CI job eval-harness-selftests (grader+adapter+isolation, LLM-free)",
+        "docs/development/P08.md"
+      ],
+      "blockers": [
+        "FULL 40x3 scored eval NOT_RUN: agent latency (most codex calls hit 150-160s timeout on this loaded host) + account/cost (no budget authorized); Claude BLOCKED (low credit)",
+        "fintech-pr-review qualitative discipline stays NEEDS_REVIEW (no deterministic harness)",
+        "PR #8 remains draft off unmerged PR #7 base; merge gated on PR #7 landing first"
+      ],
+      "validated_commit": "212d7a5"
+    }
+  ],
+  "baseline_tests": {
+    "installer_verify": "PASS",
+    "installer_test": "27/27 PASS",
+    "ran_on": "windows",
+    "node": "v24.14.1"
+  },
+  "ci": {
+    "run_id": "40496587850",
+    "head_sha": "5799e898b4b8a7c7fd5672cefa01fe4cba8f45a4",
+    "conclusion": "success",
+    "jobs": "installer 18/20/22/24 x ubuntu/windows (8) + dotnet-postgres-harness (real postgres:16 service) all success",
+    "url": "https://github.com/fintechbear/fintech-compliance-skills/actions/runs/40496587850"
+  },
+  "draft_pr": "https://github.com/fintechbear/fintech-compliance-skills/pull/8"
+}

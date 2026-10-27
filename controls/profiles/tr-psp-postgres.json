@@ -1,0 +1,23 @@
+{
+  "profile_id": "tr-psp-postgres",
+  "description": "A Turkish payment service provider operating as an obliged entity, storing card and KYC data in PostgreSQL. Example profile; obligations are DECLARED, not inferred.",
+  "entity_role": {
+    "kind": "obliged_entity",
+    "activity": "PSP",
+    "declared": true
+  },
+  "jurisdictions": ["TR"],
+  "data_categories": ["pan", "pii_identity", "kyc_records", "transaction_records", "auth_credentials"],
+  "payment_providers": ["stripe"],
+  "stack": {
+    "languages": ["csharp-dotnet"],
+    "databases": ["postgresql"],
+    "detected": false
+  },
+  "assumptions": [
+    "The entity has declared it is a MASAK-obliged payment institution (not merely 'has Turkish users').",
+    "Card data is handled; FCS-PAN-001, FCS-SAD-001 apply.",
+    "Retention is modeled per data_category; no single national delete period is assumed."
+  ],
+  "overlays": []
+}

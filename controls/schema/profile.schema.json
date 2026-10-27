@@ -1,0 +1,72 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://fintechbear.github.io/fcs/profile.schema.json",
+  "title": "FCS Profile",
+  "description": "A deployment context profile. It narrows which controls apply. Technical stack may be DETECTED from the codebase; legal role and jurisdiction obligations must NOT be guessed and are declared explicitly.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["profile_id", "entity_role", "jurisdictions"],
+  "properties": {
+    "profile_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+    "description": { "type": "string" },
+    "entity_role": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "declared"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["obliged_entity", "vendor_to_obliged_entity", "unknown"],
+          "description": "An obliged entity carries AML/licensing duties directly; a vendor supplies software to one and does NOT inherit those duties. 'unknown' when not declared."
+        },
+        "activity": {
+          "type": "string",
+          "description": "Business activity (e.g. 'PSP', 'e-money', 'core banking', 'bookkeeping SaaS')."
+        },
+        "declared": {
+          "type": "boolean",
+          "description": "Must be true. Legal role is DECLARED, never inferred from the presence of users in a country."
+        }
+      }
+    },
+    "jurisdictions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "enum": ["TR", "EU", "US", "UK", "OTHER"] },
+      "description": "Jurisdictions whose obligations the entity has DECLARED it is subject to. Having users in a country does not by itself add that country's regulator obligations."
+    },
+    "data_categories": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["pan", "sad", "pii_identity", "kyc_records", "transaction_records", "auth_credentials", "marketing_consent", "support_logs"]
+      },
+      "description": "Data categories the system holds. Retention, erasure and legal hold are modeled PER category, never as one blanket period."
+    },
+    "payment_providers": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Declared payment/provider integrations (e.g. 'stripe'). Provider-specific terms (void vs refund vs reversal) are resolved against that provider, not universalized."
+    },
+    "stack": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "languages": { "type": "array", "items": { "type": "string" } },
+        "databases": { "type": "array", "items": { "type": "string" } },
+        "detected": { "type": "boolean", "default": false, "description": "True when the stack was detected from the codebase rather than declared." }
+      },
+      "description": "Technical stack. MAY be detected from data/files; this is the one part inference is allowed for."
+    },
+    "assumptions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Explicit context assumptions carried into control selection, so they are visible rather than silent."
+    },
+    "overlays": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Organization overlay profile ids layered on top. Conflicts are surfaced with reasons, never silently overridden; a stricter-looking sentence is NOT automatically treated as legally superior."
+    }
+  }
+}

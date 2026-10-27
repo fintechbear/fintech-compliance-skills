@@ -63,7 +63,7 @@ For **Log4j2**, use a `RewritePolicy` (`org.apache.logging.log4j.core.appender.r
 
 Defense in depth: never pass raw PII into the log call in the first place. Masking is the safety net, not the primary control.
 
-**What is NEVER logged:** CVV/CVC, full PAN, full track/magstripe/chip data, PIN or PIN block, plaintext passwords or password hashes, private keys, symmetric data keys, full OAuth/refresh tokens, full national IDs. (Refusal policy rules 1, 3, 4.)
+**What is NEVER logged:** CVV/CVC, full PAN, full track/magstripe/chip data, PIN or PIN block, plaintext passwords or password hashes, private keys, symmetric data keys, full OAuth/refresh tokens, full national IDs. (Refusal policy FCS-PAN-001/FCS-SAD-001/FCS-LOG-001.)
 
 **Log integrity:** money-movement and security events must be tamper-evident. Options: a dedicated append-only DB table with no `UPDATE`/`DELETE` grant to the app role; ship logs to a **WORM** sink (e.g. S3 Object Lock, write-once bucket) outside the app's delete authority; or hash-chain audit rows (`row.hash = SHA-256(prevHash || canonical(row))`) so a deleted/edited row breaks the chain. Clock-sync the hosts (NTP) so timestamps are trustworthy. PCI-DSS v4.0.1 Req. 10 and SOX both require this.
 
@@ -74,7 +74,7 @@ Canonical money-movement step order in a Spring service:
 1. **Authenticate & authorize** — `@PreAuthorize("hasAuthority('transfer.execute')")` on the service method; confirm the caller owns/controls the source account. Fail closed.
 2. **Validate at the boundary** — Bean Validation (`jakarta.validation` / `javax.validation`: `@NotNull`, `@Positive`, `@DecimalMin`), explicit currency, amount as `BigDecimal` or minor-unit `long` — **never `double`/`float`** (core rule).
 3. **Idempotency gate** — require a client `Idempotency-Key`; look it up first. If seen, return the stored result instead of re-executing. Persist the key in the same transaction as the effect, with a unique constraint, so a concurrent retry collides rather than double-spends.
-4. **Approval gates** — enforce maker-checker / dual control and limit thresholds (e.g. SCA step-up, sanctions/AML hold) **before** funds move. For onboarding: KYC/sanctions screening must pass before the account is usable (refusal rule 5).
+4. **Approval gates** — enforce maker-checker / dual control and limit thresholds (e.g. SCA step-up, sanctions/AML hold) **before** funds move. For onboarding: KYC/sanctions screening must pass before the account is usable (FCS-AML-001).
 5. **Execute inside one DB transaction** — `@Transactional`. Debit source, credit destination, write the ledger entries, and write the **audit record** atomically. If anything fails, the whole unit rolls back; an audit row must never persist for a transfer that didn't happen, and vice versa.
 6. **Audit record** — who (actor), what (action), when (server UTC), source, destination, amount+currency, idempotency key, before/after balances. Append-only (see Log integrity).
 7. **Emit event / notify** — only after commit (use `@TransactionalEventListener(phase = AFTER_COMMIT)` so downstream never sees an uncommitted transfer).
@@ -122,7 +122,7 @@ PasswordEncoder encoder = new Argon2PasswordEncoder(16, 32, 1, 19456, 2);
 - **bcrypt** is the acceptable fallback when Argon2/BouncyCastle is unavailable: `new BCryptPasswordEncoder(12)` (work factor ≥10, ≥12 preferred). Note bcrypt silently truncates input at **72 bytes** — pre-hash long/Unicode passwords (e.g. SHA-256 → Base64) before bcrypt, or use Argon2.
 - Use **`DelegatingPasswordEncoder`** (`PasswordEncoderFactories.createDelegatingPasswordEncoder()`) so stored hashes carry an `{id}` prefix (`{argon2}`, `{bcrypt}`) and you can migrate algorithms over time. Call `encoder.upgradeEncoding(hash)` on login to rehash when parameters strengthen.
 - **PBKDF2** (`Pbkdf2PasswordEncoder`) only where **FIPS 140** forbids Argon2/bcrypt — then ≥600,000 HMAC-SHA256 iterations (OWASP).
-- **Forbidden:** MD5, SHA-1, plain SHA-256/512 for passwords, any unsalted or reversible scheme (refusal rules 2, 4).
+- **Forbidden:** MD5, SHA-1, plain SHA-256/512 for passwords, any unsalted or reversible scheme (refusal FCS-SECRET-001/FCS-CRYPTO-001).
 
 ### Encrypted two-way (data you must recover: PAN*, IBAN, national ID)
 
@@ -156,7 +156,7 @@ byte[] encrypt(byte[] dataKey /*256-bit*/, byte[] plaintext, byte[] aad) throws 
 - **Zero the plaintext data key** (`Arrays.fill(dataKey, (byte)0)`) after use.
 - **Rotate** master keys (KMS auto-rotation) and re-wrap data keys on schedule; support decrypting old-key data during rotation.
 
-**Forbidden (refusal rule 4):** hardcoded keys/IVs, static or reused IVs, `AES/ECB/*`, `DES`/`3DES`, `"AES"` with no explicit mode (JCE defaults to **ECB** — a trap), home-rolled crypto, `Random`/`Math.random()` for keys or IVs (use `SecureRandom`), disabling TLS/cert validation for data in transit (rule 8). TLS 1.2+ for all sensitive transport.
+**Forbidden (FCS-CRYPTO-001):** hardcoded keys/IVs, static or reused IVs, `AES/ECB/*`, `DES`/`3DES`, `"AES"` with no explicit mode (JCE defaults to **ECB** — a trap), home-rolled crypto, `Random`/`Math.random()` for keys or IVs (use `SecureRandom`), disabling TLS/cert validation for data in transit (FCS-TLS-001). TLS 1.2+ for all sensitive transport.
 
 ## Country differences (how the same Java code changes)
 
@@ -237,20 +237,20 @@ PasswordEncoder passwordEncoder() {
 @PostMapping("/pay")
 public String pay(@RequestParam String pan, @RequestParam String cvv, double amount) {
 
-    log.info("charging card {} cvv {} amount {}", pan, cvv, amount);  // logs PAN+CVV — rules 1,3
+    log.info("charging card {} cvv {} amount {}", pan, cvv, amount);  // logs PAN+CVV — FCS-PAN-001/FCS-SAD-001/FCS-LOG-001
 
-    user.setPassword(password);                        // plaintext password — rule 2
-    user.setPasswordMd5(DigestUtils.md5Hex(password)); // broken hash — rule 2,4
+    user.setPassword(password);                        // plaintext password — FCS-SECRET-001
+    user.setPasswordMd5(DigestUtils.md5Hex(password)); // broken hash — FCS-SECRET-001/FCS-CRYPTO-001
 
-    Cipher c = Cipher.getInstance("AES");              // defaults to AES/ECB — rule 4
+    Cipher c = Cipher.getInstance("AES");              // defaults to AES/ECB — FCS-CRYPTO-001
     SecretKeySpec k = new SecretKeySpec(
-        "hardcoded-secret".getBytes(), "AES");         // hardcoded key — rules 4,7
+        "hardcoded-secret".getBytes(), "AES");         // hardcoded key — FCS-SECRET-002/FCS-CRYPTO-001
 
     account.setBalance(account.getBalance() - amount); // double money, no @Version,
     account.setBalance(dest.getBalance() + amount);    // no idempotency, no audit,
-    accountRepo.save(account);                         // no lock -> lost update, no audit — rule 6
+    accountRepo.save(account);                         // no lock -> lost update, no audit — FCS-AUDIT-001
     return "ok";
 }
 ```
 
-Red lines crossed: storing/logging PAN & CVV (PCI-DSS, rules 1, 3), plaintext & MD5 passwords (rule 2/4), AES-ECB + hardcoded key (rule 4, 7), floating-point money (core), no idempotency/lock (lost update), no audit record on money movement (rule 6). The compliant alternatives are the *Good example* above and tokenization of the card via the processor. See [`refusal/refusal-policy.md`](../refusal/refusal-policy.md).
+Red lines crossed: storing/logging PAN & CVV (PCI-DSS, FCS-PAN-001/FCS-SAD-001/FCS-LOG-001), plaintext & MD5 passwords (FCS-SECRET-001/FCS-CRYPTO-001), AES-ECB + hardcoded key (FCS-SECRET-002/FCS-CRYPTO-001), floating-point money (core), no idempotency/lock (lost update), no audit record on money movement (FCS-AUDIT-001). The compliant alternatives are the *Good example* above and tokenization of the card via the processor. See [`refusal/refusal-policy.md`](../refusal/refusal-policy.md).

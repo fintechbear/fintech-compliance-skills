@@ -114,6 +114,22 @@ Flags: `--tool claude|kiro|kiro-crew|codex`, `--scope`, `--target <dir>`, `--hom
 After installing: **Claude Code** — restart or `/reload`; **Kiro** — loads on the
 next session; **Codex** — reads `AGENTS.md` automatically at session start.
 
+### Check your install (doctor)
+
+Run a static self-check of what is installed:
+
+```
+npx github:fintechbear/fintech-compliance-skills-doctor
+# or, in a clone:  node installer/diagnose.js
+```
+
+It reports which targets are installed, whether each managed skill is **current** or has
+**drifted** (source is newer — re-run the installer), which files you **edited** (preserved),
+and — for the source repo — that every `FCS-…` id a skill cites resolves to the control
+catalog. It exits non-zero on a drifted install or an unresolved id, so it is CI-friendly.
+It is a **static integrity check of the installed files, not a runtime compliance audit and
+not a scanner** — it never claims your own code is compliant.
+
 ### Manual (any other agent)
 
 Every skill is just a Markdown file under `skills/`. Point your agent's skill/context

@@ -62,7 +62,7 @@ END;
 
 **What is MASKED before a human or a low-privilege app sees it** — PAN (expose at most first 6 + last 4), national ID, IBAN, DOB, CVV (never — it must not be stored at all). Enforce display masking with **Data Redaction** (see Hashing & encryption), *not* by trusting the application to mask. Redaction is the safety net at the SQL boundary; the app should also never select the cleartext it does not need.
 
-**What is NEVER written to any audit trail, trace, or `DBMS_OUTPUT`:** CVV/CVC, full PAN, full track/PIN, plaintext passwords or verifier hashes, TDE master keys or `DBMS_CRYPTO` data keys, full national IDs. Beware: `FGA` can capture the **SQL text and bind values** of audited statements — if a developer passes a PAN as a literal in a `WHERE` clause it lands in the audit trail. Bind sensitive predicates and keep cleartext out of SQL literals. (Refusal rules 1, 3, 4.)
+**What is NEVER written to any audit trail, trace, or `DBMS_OUTPUT`:** CVV/CVC, full PAN, full track/PIN, plaintext passwords or verifier hashes, TDE master keys or `DBMS_CRYPTO` data keys, full national IDs. Beware: `FGA` can capture the **SQL text and bind values** of audited statements — if a developer passes a PAN as a literal in a `WHERE` clause it lands in the audit trail. Bind sensitive predicates and keep cleartext out of SQL literals. (Refusal FCS-PAN-001/FCS-SAD-001/FCS-LOG-001.)
 
 **Log integrity / append-only:** the unified audit trail is stored in the `AUDSYS` schema, which **cannot be modified by normal DML even by DBAs** — that is its tamper-evidence. Harden it further:
 
@@ -80,7 +80,7 @@ Canonical money-movement order inside a PL/SQL transaction:
 1. **Authenticate & authorize** — identify the caller (`SYS_CONTEXT('USERENV','SESSION_USER')`, or app user via `DBMS_SESSION.SET_IDENTIFIER` / `CLIENT_IDENTIFIER`). Enforce row access with **VPD** so a caller can only touch accounts they own. Fail closed.
 2. **Validate** — amounts as `NUMBER` (never `BINARY_FLOAT`/`BINARY_DOUBLE` for money — binary floats cannot represent decimal cents exactly), explicit currency, positive amount, known accounts.
 3. **Idempotency gate** — a `transfer_request` table with a `UNIQUE` constraint on the client idempotency key; insert it first in the same transaction so a concurrent retry raises `DUP_VAL_ON_INDEX` instead of double-spending.
-4. **Approval / AML gates** — maker-checker, limit thresholds, sanctions/AML (MASAK/OFAC) hold **before** funds move. Onboarding: KYC/sanctions must pass before the account is usable (refusal rule 5).
+4. **Approval / AML gates** — maker-checker, limit thresholds, sanctions/AML (MASAK/OFAC) hold **before** funds move. Onboarding: KYC/sanctions must pass before the account is usable (FCS-AML-001).
 5. **Execute in one transaction** — lock the involved account rows with `SELECT ... FOR UPDATE` in a **deterministic order** (e.g. ascending account id) to avoid deadlocks; debit, credit, insert ledger rows, write the audit record, then `COMMIT`. Everything commits or everything rolls back. Do **not** use an `AUTONOMOUS_TRANSACTION` for the business audit record — it would persist even if the transfer rolls back (acceptable only for a separate security/error log, never for the money ledger).
 6. **Audit record** — Unified Auditing captures the DML automatically; additionally write an append-only business ledger row (actor, action, UTC time, source, dest, amount+currency, idempotency key, pre/post balances).
 7. **Notify** — only after commit.
@@ -157,7 +157,7 @@ END;
 
 - **Do not design password storage in the database.** Oracle's own user passwords are handled by the DB's verifier (`SHA-2`-based, configured by `SQLNET.ALLOWED_LOGON_VERSION_SERVER = 12a`); you do not implement that.
 - For *application* user passwords, hash in the **application tier** with **Argon2id** (OWASP: m ≥ 19 MiB, t = 2, p = 1), bcrypt as fallback — store only the resulting hash string in a column. `DBMS_CRYPTO.HASH` offers only `SHA-256/384/512`, which are **too fast for passwords** — use them for data integrity/HMAC, never for password storage.
-- **Forbidden (refusal rules 2, 4):** storing passwords reversibly, MD5/SHA-1 for integrity, `DBMS_CRYPTO.HASH(..., HASH_MD5)` or `HASH_SH1`, DES/3DES, ECB/`CHAIN_ECB`, hardcoded keys or IVs, reusing an IV, home-rolled crypto, floating-point money.
+- **Forbidden (refusal FCS-SECRET-001/FCS-CRYPTO-001):** storing passwords reversibly, MD5/SHA-1 for integrity, `DBMS_CRYPTO.HASH(..., HASH_MD5)` or `HASH_SH1`, DES/3DES, ECB/`CHAIN_ECB`, hardcoded keys or IVs, reusing an IV, home-rolled crypto, floating-point money.
 
 ### Access control above TDE (threat = an authorized-but-over-scoped user)
 
@@ -261,7 +261,7 @@ CREATE TABLE core.card (
   pan_iv        RAW(12),
   pan_tag_aad   RAW(512),
   pan_last4     CHAR(4)       -- for display/search; redacted to show only last 4
-  -- NO cvv column: CVV must never be stored (PCI-DSS, refusal rule 1)
+  -- NO cvv column: CVV must never be stored (PCI-DSS, FCS-SAD-001)
 ) TABLESPACE core_sensitive;
 ```
 
@@ -270,27 +270,27 @@ CREATE TABLE core.card (
 ```sql
 -- ❌ Every line crosses a red line — refuse to write this.
 CREATE TABLE card_bad (
-  pan  VARCHAR2(19),          -- raw PAN in a non-TDE tablespace, no column crypto — rule 1
-  cvv  VARCHAR2(4),           -- storing CVV — forbidden outright — rule 1
-  pwd  VARCHAR2(32)           -- will hold an MD5 of the password — rule 2/4
+  pan  VARCHAR2(19),          -- raw PAN in a non-TDE tablespace, no column crypto — FCS-PAN-001/FCS-SAD-001
+  cvv  VARCHAR2(4),           -- storing CVV — forbidden outright — FCS-PAN-001/FCS-SAD-001
+  pwd  VARCHAR2(32)           -- will hold an MD5 of the password — FCS-SECRET-001/FCS-CRYPTO-001
 );
 
 CREATE OR REPLACE PROCEDURE pay_bad(p_pan VARCHAR2, p_cvv VARCHAR2, p_amt BINARY_DOUBLE) IS
 BEGIN
-  DBMS_OUTPUT.PUT_LINE('charging card ' || p_pan || ' cvv ' || p_cvv);        -- logs PAN+CVV — rules 1,3
+  DBMS_OUTPUT.PUT_LINE('charging card ' || p_pan || ' cvv ' || p_cvv);        -- logs PAN+CVV — FCS-PAN-001/FCS-SAD-001/FCS-LOG-001
   INSERT INTO card_bad(pan, cvv, pwd)
     VALUES (p_pan, p_cvv, RAWTOHEX(DBMS_CRYPTO.HASH(UTL_RAW.CAST_TO_RAW(:pw),
-                                                    DBMS_CRYPTO.HASH_MD5)));   -- MD5 password — rules 2,4
+                                                    DBMS_CRYPTO.HASH_MD5)));   -- MD5 password — FCS-SECRET-001/FCS-CRYPTO-001
   -- AES in ECB with a hardcoded key, reused everywhere:
   INSERT INTO card_bad(pan) VALUES (RAWTOHEX(DBMS_CRYPTO.ENCRYPT(
      UTL_RAW.CAST_TO_RAW(p_pan),
-     DBMS_CRYPTO.ENCRYPT_AES256 + DBMS_CRYPTO.CHAIN_ECB + DBMS_CRYPTO.PAD_PKCS5,  -- ECB — rule 4
-     UTL_RAW.CAST_TO_RAW('hardcoded-key-123'))));                                 -- hardcoded key — rules 4,7
+     DBMS_CRYPTO.ENCRYPT_AES256 + DBMS_CRYPTO.CHAIN_ECB + DBMS_CRYPTO.PAD_PKCS5,  -- ECB — FCS-CRYPTO-001
+     UTL_RAW.CAST_TO_RAW('hardcoded-key-123'))));                                 -- hardcoded key — FCS-SECRET-002/FCS-CRYPTO-001
   UPDATE account SET balance = balance - p_amt WHERE id = 1;   -- no lock -> lost update,
-  UPDATE account SET balance = balance + p_amt WHERE id = 2;   -- no idempotency, no audit — rule 6
+  UPDATE account SET balance = balance + p_amt WHERE id = 2;   -- no idempotency, no audit — FCS-AUDIT-001
   COMMIT;
 END;
 /
 ```
 
-Red lines crossed: storing/printing PAN & CVV (PCI-DSS, rules 1, 3), MD5 password (rules 2, 4), AES-ECB + hardcoded key (rules 4, 7), `BINARY_DOUBLE` for money (core), no `FOR UPDATE` lock (lost update), no idempotency key, no audit of money movement (rule 6). The compliant alternative is the *Good example* above: TDE-encrypted tablespace, `DBMS_CRYPTO` AES-256-GCM with a KMS-held key (or tokenize the card via the processor and store none of it), VPD + Database Vault for access, Unified + FGA auditing, and Data Redaction for display. See [`refusal/refusal-policy.md`](../refusal/refusal-policy.md) and [`global/pci-dss.md`](../global/pci-dss.md).
+Red lines crossed: storing/printing PAN & CVV (PCI-DSS, FCS-PAN-001/FCS-SAD-001/FCS-LOG-001), MD5 password (FCS-SECRET-001/FCS-CRYPTO-001), AES-ECB + hardcoded key (FCS-SECRET-002/FCS-CRYPTO-001), `BINARY_DOUBLE` for money (core), no `FOR UPDATE` lock (lost update), no idempotency key, no audit of money movement (FCS-AUDIT-001). The compliant alternative is the *Good example* above: TDE-encrypted tablespace, `DBMS_CRYPTO` AES-256-GCM with a KMS-held key (or tokenize the card via the processor and store none of it), VPD + Database Vault for access, Unified + FGA auditing, and Data Redaction for display. See [`refusal/refusal-policy.md`](../refusal/refusal-policy.md) and [`global/pci-dss.md`](../global/pci-dss.md).

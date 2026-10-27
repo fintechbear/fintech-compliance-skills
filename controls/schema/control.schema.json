@@ -1,0 +1,104 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://fintechbear.github.io/fcs/control.schema.json",
+  "title": "FCS Control",
+  "description": "A single project-local control in the Fintech Compliance Skills catalog. FCS ids are LOCAL project identifiers, not official regulation article numbers.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "statement", "applicability", "control_type", "source_refs", "review_status", "owner_role"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^FCS-[A-Z]+-[0-9]{3}$",
+      "description": "Permanent project-local control id. Never reused once retired."
+    },
+    "statement": {
+      "type": "string",
+      "minLength": 10,
+      "description": "What the control requires, in one or two sentences."
+    },
+    "applicability": {
+      "type": "string",
+      "description": "When this control applies (scope / trigger)."
+    },
+    "control_type": {
+      "type": "string",
+      "enum": ["refusal_red_line", "preventive", "detective", "process", "data_handling"],
+      "description": "The engineering nature of the control."
+    },
+    "source_refs": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/source_ref" },
+      "description": "One or more distinct bases. A control may carry several (law + standard + project policy)."
+    },
+    "source_version": {
+      "type": ["string", "null"],
+      "description": "Version/edition of the primary source if known (e.g. 'PCI DSS v4.0.1'). Null when unverified."
+    },
+    "effective_date": {
+      "type": ["string", "null"],
+      "description": "ISO date the source became effective, if known. Null when unknown."
+    },
+    "reviewed_at": {
+      "type": ["string", "null"],
+      "description": "ISO date this control's source claim was last human-reviewed. Null = never."
+    },
+    "review_status": {
+      "type": "string",
+      "enum": ["verified", "needs_review", "unverified"],
+      "description": "verified = article+scope confirmed against an official source; needs_review = source reachable but claim not yet confirmed; unverified = not checked."
+    },
+    "owner_role": {
+      "type": "string",
+      "description": "The role accountable for this control (e.g. 'engineering', 'compliance', 'security')."
+    },
+    "skill_refs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Repo-relative skill files that teach/enforce this control."
+    },
+    "test_refs": {
+      "type": "array",
+      "items": { "type": "string" },
+      "default": [],
+      "description": "Repo-relative tests/harness scenarios that exercise this control."
+    },
+    "limitations": {
+      "type": "string",
+      "description": "Known gaps: what this control does NOT guarantee, and where the claim is weaker than it looks."
+    },
+    "replaces": {
+      "type": ["string", "null"],
+      "description": "If this control supersedes a retired id, the retired id. Retired ids are never reused for a new meaning."
+    }
+  },
+  "definitions": {
+    "source_ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "label"],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["law", "standard", "project_policy", "engineering_recommendation"],
+          "description": "Separates legal obligation, industry standard, project's own stricter policy, and engineering advice."
+        },
+        "label": {
+          "type": "string",
+          "description": "Human label, e.g. 'PCI DSS Req 3.3.1' or 'KVKK Art. 7'."
+        },
+        "url": {
+          "type": ["string", "null"],
+          "description": "Link to the source. Reachability is NOT the same as the claim being verified."
+        },
+        "verified": {
+          "type": "boolean",
+          "default": false,
+          "description": "True only when the article number AND its scope were confirmed against the official text."
+        }
+      }
+    }
+  }
+}

@@ -30,7 +30,7 @@ High-throughput payment infrastructure logs a lot; redaction must be a **securit
 
 **What is MASKED before it reaches any sink.** PAN (show at most first-6/last-4, e.g. `411111******1111`), CVV/CVC (never — not even masked), passwords, password hashes, API keys/secrets, bearer/refresh tokens, full national IDs (KVKK/GDPR), private keys, full IBAN (mask to last 4), session cookies, OTP codes, encryption keys.
 
-**What is NEVER logged, at any level.** CVV/CVC/CVV2, full track/magstripe data, PIN or PIN blocks, the raw request body of a card-entry endpoint, plaintext passwords, the AES data key or KMS plaintext key, and the full PAN. These are refusal-policy red lines (rules 1, 3, 4).
+**What is NEVER logged, at any level.** CVV/CVC/CVV2, full track/magstripe data, PIN or PIN blocks, the raw request body of a card-entry endpoint, plaintext passwords, the AES data key or KMS plaintext key, and the full PAN. These are refusal-policy red lines (FCS-PAN-001/FCS-SAD-001/FCS-LOG-001).
 
 **Redaction mechanism — allow-list, not deny-list.** A regex deny-list over free text fails the moment data is JSON-escaped, wrapped in an error, or renamed. Attach `LogValuer` to every type that can hold a secret and emit only the fields that are safe:
 
@@ -69,10 +69,10 @@ Because `slog` calls `LogValue()` automatically, `slog.Info("charge", "customer"
 
 Canonical money-movement order, each step mapped to the Go mechanism that enforces it:
 
-1. **Authenticate + authorize** the caller. Check least-privilege role/scope before anything else (refusal rule 10). Carry identity + request-scoped values in `context.Context` (via a typed key), never in globals.
+1. **Authenticate + authorize** the caller. Check least-privilege role/scope before anything else (FCS-AUTHZ-001). Carry identity + request-scoped values in `context.Context` (via a typed key), never in globals.
 2. **Validate** amount (minor units, see Hashing/Money note), currency, accounts. Reject at the edge.
 3. **Idempotency gate.** Require an idempotency key on every mutating payment endpoint. Look it up first; if seen, return the stored result without re-executing. This is the single most important defence against double-charges on retries/timeouts in a high-throughput system.
-4. **AML / sanctions / KYC** screening on onboarding and on transfers where required. A hit is a `Warn` + audit + hold, never a silent pass (refusal rule 5).
+4. **AML / sanctions / KYC** screening on onboarding and on transfers where required. A hit is a `Warn` + audit + hold, never a silent pass (FCS-AML-001).
 5. **Open a DB transaction** with `BeginTx(ctx, ...)`; do the balance read, the invariant check, the debit/credit, **and the audit insert** inside the *same* transaction so they commit or roll back atomically.
 6. **Approval gate** for flows above threshold (dual control / maker-checker): write a pending record, require a second authorized principal to approve before the transfer posts.
 7. **Write the audit record** (actor, action, source/dest, amount, idempotency key, decision, timestamp, request id) to the append-only store *within* the transaction.
@@ -146,11 +146,11 @@ func HashPassword(pw string) (string, error) {
 }
 ```
 
-**bcrypt fallback.** `golang.org/x/crypto/bcrypt` with `cost >= 12` is acceptable where Argon2 is unavailable, but note bcrypt silently truncates input at **72 bytes** — pre-hash long/paraphrase inputs with SHA-256 before bcrypt, or prefer Argon2id. **Never MD5 or SHA-1** for passwords or integrity (refusal rule 4).
+**bcrypt fallback.** `golang.org/x/crypto/bcrypt` with `cost >= 12` is acceptable where Argon2 is unavailable, but note bcrypt silently truncates input at **72 bytes** — pre-hash long/paraphrase inputs with SHA-256 before bcrypt, or prefer Argon2id. **Never MD5 or SHA-1** for passwords or integrity (FCS-CRYPTO-001; passwords also FCS-SECRET-001).
 
 **Encrypted two-way — PAN / IBAN / national ID.** Use **AES-256-GCM** via `crypto/aes` + `crypto/cipher` (`cipher.NewGCM`), which gives authenticated encryption (confidentiality + tamper detection).
 
-- **Key:** 32 bytes (AES-256). The key is a **data key** issued by a KMS under envelope encryption — call KMS `GenerateDataKey`, use the plaintext data key in memory only, store the KMS-wrapped data key alongside the ciphertext, and zero the plaintext key after use. Never a static/hardcoded key (refusal rules 4, 7).
+- **Key:** 32 bytes (AES-256). The key is a **data key** issued by a KMS under envelope encryption — call KMS `GenerateDataKey`, use the plaintext data key in memory only, store the KMS-wrapped data key alongside the ciphertext, and zero the plaintext key after use. Never a static/hardcoded key (refusal FCS-SECRET-002/FCS-CRYPTO-001).
 - **Nonce:** 12 bytes, fresh from `crypto/rand` for **every** encryption, prepended to the ciphertext. **Reusing a nonce with the same key is catastrophic for GCM** — it breaks confidentiality and forgeability.
 - Bind context with GCM's additional authenticated data (AAD), e.g. the record id, so ciphertext can't be moved between rows.
 
@@ -173,7 +173,7 @@ func Encrypt(dataKey, plaintext, aad []byte) ([]byte, error) {
 }
 ```
 
-**Key management & rotation.** Keys live in a KMS/HSM (AWS KMS, GCP KMS, Azure Key Vault, or PKCS#11 HSM), never in source, env files committed to git, or config in the repo. Use envelope encryption (KMS-wrapped data keys). Rotate the KMS master key on schedule; store a key id/version with each ciphertext so old data stays decryptable through rotation. Transport is TLS 1.2+ with certificate validation on (refusal rule 8) — never `InsecureSkipVerify: true` in production.
+**Key management & rotation.** Keys live in a KMS/HSM (AWS KMS, GCP KMS, Azure Key Vault, or PKCS#11 HSM), never in source, env files committed to git, or config in the repo. Use envelope encryption (KMS-wrapped data keys). Rotate the KMS master key on schedule; store a key id/version with each ciphertext so old data stays decryptable through rotation. Transport is TLS 1.2+ with certificate validation on (FCS-SECRET-002) — never `InsecureSkipVerify: true` in production.
 
 **Forbidden (refusal red lines):** MD5/SHA-1 for passwords or integrity, DES/3DES, AES-**ECB** mode, home-rolled crypto, static or hardcoded keys/IVs, nonce/IV reuse, reversible encryption of passwords, `math/rand` for anything security-sensitive (use `crypto/rand`), and non-constant-time comparison of secrets.
 
@@ -239,7 +239,7 @@ func Charge(pan, cvv string, amount float64) { // float money — rounding error
 }
 ```
 
-**Why refuse:** this crosses refusal-policy rules 1 (store PAN/CVV), 2 (broken password hash), 3 (log PAN/CVV), 4 (hardcoded key, broken crypto, fixed IV), and 7 (hardcoded credential), plus SQL injection and float money. The compliant rewrite is the Good example: tokenize at the gateway, store only the token + masked PAN, Argon2id for passwords, AES-256-GCM with a KMS data key and a random per-message nonce, parameterized SQL, integer minor units, and an atomic audit insert.
+**Why refuse:** this crosses refusal-policy FCS-PAN-001/FCS-SAD-001 (store PAN/CVV), FCS-SECRET-001/FCS-CRYPTO-001 (broken password hash), FCS-SECRET-002 (hardcoded key), FCS-AUDIT-001 (no audit). The compliant rewrite is the Good example: tokenize at the gateway, store only the token + masked PAN, Argon2id for passwords, AES-256-GCM with a KMS data key and a random per-message nonce, parameterized SQL, integer minor units, and an atomic audit insert.
 
 ---
 

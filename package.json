@@ -3,14 +3,17 @@
   "version": "1.0.0",
   "description": "Install regulation-aware fintech coding skills into Claude Code, Kiro, or Codex CLI with one command.",
   "bin": {
-    "fintech-compliance-skills": "installer/index.js"
+    "fintech-compliance-skills": "installer/index.js",
+    "fintech-compliance-skills-doctor": "installer/diagnose.js"
   },
   "scripts": {
     "verify": "node installer/verify.js",
-    "test": "node --test installer/test.js"
+    "test": "node --test installer/test.js",
+    "diagnose": "node installer/diagnose.js"
   },
   "files": [
     "installer/index.js",
+    "installer/diagnose.js",
     "skills/",
     "README.md",
     "LICENSE"

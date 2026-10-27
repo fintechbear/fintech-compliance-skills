@@ -39,12 +39,12 @@ A SQL Server Audit has two parts: the **Server Audit object** (defines the *targ
 The audit records the **fact** of access (principal, object, statement), not the sensitive payload, so PAN/CVV/etc. do not land in the audit file by design — provided you audit at the object/statement-group level and do **not** enable payload-capturing traces. The masking obligations fall on anything else that could emit values:
 
 - **Never enable** a SQL Trace / Extended Events session that captures statement text or parameter values against tables holding PAN, CVV, passwords, tokens, or full national IDs in production. `rpc_completed`/`sql_batch_completed` with `batch_text`/`statement` will capture the literal values.
-- **Application-side logging** (Serilog etc.) is where values leak — mask there, at the point of capture, per [`languages/csharp-dotnet.md`](../languages/csharp-dotnet.md). PAN is masked to last-4 (`************1234`); CVV/PIN/password/token/private key are **dropped, never masked-then-logged** (refusal-policy rules 1 and 3).
+- **Application-side logging** (Serilog etc.) is where values leak — mask there, at the point of capture, per [`languages/csharp-dotnet.md`](../languages/csharp-dotnet.md). PAN is masked to last-4 (`************1234`); CVV/PIN/password/token/private key are **dropped, never masked-then-logged** (refusal-policy FCS-PAN-001/FCS-SAD-001/FCS-LOG-001).
 - **Dynamic Data Masking** is *not* a logging control and *not* an access control — see the warning in the Hashing & encryption section. Do not rely on it to keep values out of any sink.
 
 ### What is NEVER logged (even masked)
 
-CVV/CVC, full magnetic-track/chip data, PIN or PIN blocks, plaintext passwords, private keys, TDE/CMK key material, and raw session/refresh/bearer tokens. These are refusal-policy red lines (rules 1, 3, 4), not "mask-then-log" cases.
+CVV/CVC, full magnetic-track/chip data, PIN or PIN blocks, plaintext passwords, private keys, TDE/CMK key material, and raw session/refresh/bearer tokens. These are refusal-policy red lines (FCS-PAN-001/FCS-SAD-001/FCS-LOG-001), not "mask-then-log" cases.
 
 ### Log integrity — append-only / WORM / hash chain
 
@@ -87,7 +87,7 @@ This section maps each data class to the correct SQL Server mechanism. The domin
 ### What is HASHED one-way
 
 - **Passwords are hashed in the application tier, never in the database**, with a slow, salted KDF — **Argon2id** (preferred) or **bcrypt** via ASP.NET Core Identity / `System.Security.Cryptography` (see [`languages/csharp-dotnet.md`](../languages/csharp-dotnet.md)). SQL Server's `HASHBYTES` is a fast general-purpose hash and is **not** a password KDF — do not use it for credentials.
-- **`HASHBYTES` is forbidden with `MD5`/`SHA1`** for any integrity or de-identification purpose (refusal rule 4); use `SHA2_256`/`SHA2_512` only.
+- **`HASHBYTES` is forbidden with `MD5`/`SHA1`** for any integrity or de-identification purpose (FCS-CRYPTO-001); use `SHA2_256`/`SHA2_512` only.
 - **PAN hashing for PCI DSS.** If you store a hash of the PAN (e.g. for duplicate detection), PCI DSS v4.0.1 **Requirement 3.5.1.1** requires a **keyed cryptographic hash** (HMAC with a secret key kept separate from the data), mandatory since **31 March 2025**. A plain `HASHBYTES('SHA2_256', @pan)` is **non-compliant** because an attacker with the hash can brute-force the small PAN keyspace. Compute the HMAC in the application with a key held in the KMS/HSM, or do not store the hash at all. *(PCI SSC Requirement 3; [Control Gap, "Securing PAN Using Keyed Cryptographic Hashing in PCI DSS v4.0.1"](https://www.controlgap.com/blog/securing-pan-using-keyed-cryptographic-hashing-in-pci).)*
 
 ### What is ENCRYPTED two-way — the three layers
@@ -116,7 +116,7 @@ For PAN, IBAN, national ID, and other high-sensitivity columns, Always Encrypted
 
 - **Extensible Key Management (EKM)** lets SQL Server use keys stored in an external **HSM** or **Azure Key Vault** via the **SQL Server Connector**, keeping the root of trust off the database host — this is the required posture for regulated environments (separation of duties between key custodians and DBAs; BYOK/customer-managed keys). **Note:** the SQL Server Connector for Azure Key Vault supports **asymmetric RSA keys only** for the TDE protector. *(Microsoft Learn: ["Extensible Key Management Using Azure Key Vault"](https://learn.microsoft.com/en-us/sql/relational-databases/security/encryption/extensible-key-management-using-azure-key-vault-sql-server) and ["Set up TDE with Azure Key Vault"](https://learn.microsoft.com/en-us/sql/relational-databases/security/encryption/setup-steps-for-extensible-key-management-using-the-azure-key-vault).)*
 - **Rotation.** Rotate the TDE protector / CMK on a defined schedule (and immediately on suspected compromise). Always Encrypted CMK/CEK rotation is a documented two-phase process; with secure enclaves it can be done **in place** without moving data out of the server. Keep the old key available until all data is re-wrapped.
-- **FORBIDDEN:** hardcoded or static keys/IVs in source or config (refusal rule 7); storing the CMK inside the same SQL Server it protects (defeats Always Encrypted); `ECB` mode; `MD5`/`SHA1`/`DES`/`3DES` for new work; home-rolled crypto; exporting key material to logs or email.
+- **FORBIDDEN:** hardcoded or static keys/IVs in source or config (FCS-SECRET-002); storing the CMK inside the same SQL Server it protects (defeats Always Encrypted); `ECB` mode; `MD5`/`SHA1`/`DES`/`3DES` for new work; home-rolled crypto; exporting key material to logs or email.
 
 > ### ⚠️ Dynamic Data Masking is NOT a security boundary
 > DDM is a **presentation-layer filter**: it rewrites column values in query *results* for principals lacking the `UNMASK` permission, while the stored data and the query engine use the **real** values. Users with `UNMASK`, `db_owner`, or `sysadmin` always see cleartext, and any caller who can run ad-hoc queries can **infer** masked values through `WHERE`/`JOIN`/range predicates (an inference attack) — DDM does not encrypt, does not filter rows, and does not override permissions. Use it to reduce casual over-exposure to support/analytics staff, **never** as the control that protects PAN or PII from an attacker or a privileged insider. For that, use Always Encrypted (confidentiality) and RLS (row access). *(Microsoft Learn / Azure SQL Blog: ["Dynamic Data Masking — What it is, what it isn't"](https://techcommunity.microsoft.com/t5/azure-sql-blog/dynamic-data-masking-what-it-is-what-it-isn-t-and-how-to-use-it/ba-p/4512877); Microsoft Learn: "DDM doesn't aim to prevent … exhaustive queries that expose pieces of the sensitive data".)*
@@ -242,7 +242,7 @@ END CATCH;
 ALTER TABLE dbo.CardOnFile
     ALTER COLUMN Pan ADD MASKED WITH (FUNCTION = 'partial(0,"XXXX",4)');  -- NOT encryption, NOT access control
 
--- ❌ Storing the PAN in cleartext and the CVV at all (refusal rules 1 & 4).
+-- ❌ Storing the PAN in cleartext and the CVV at all (refusal FCS-PAN-001/FCS-SAD-001).
 CREATE TABLE dbo.BadCard (
     Pan  VARCHAR(19) NOT NULL,          -- cleartext PAN
     Cvv  CHAR(3)     NOT NULL           -- CVV must NEVER be stored after authorization (PCI-DSS)
@@ -250,12 +250,12 @@ CREATE TABLE dbo.BadCard (
 
 -- ❌ "Encrypting" the PAN with an unkeyed fast hash — reversible by brute force over the small PAN
 --    keyspace, and non-compliant with PCI DSS v4.0.1 Req 3.5.1.1 (keyed hash mandatory since 2025-03-31).
-INSERT INTO dbo.BadCard (Pan) VALUES (CONVERT(VARCHAR(64), HASHBYTES('MD5', @pan), 2));  -- MD5 forbidden (rule 4)
+INSERT INTO dbo.BadCard (Pan) VALUES (CONVERT(VARCHAR(64), HASHBYTES('MD5', @pan), 2));  -- MD5 forbidden (FCS-CRYPTO-001)
 
 -- ❌ Audit that silently loses records instead of failing, and a DBA login that can rewrite history.
 CREATE SERVER AUDIT WeakAudit TO FILE (FILEPATH = 'C:\temp\')
-    WITH (ON_FAILURE = CONTINUE);       -- money moves even when it cannot be audited (rule 6)
+    WITH (ON_FAILURE = CONTINUE);       -- money moves even when it cannot be audited (FCS-AUDIT-001)
 GRANT UPDATE, DELETE ON dbo.MoneyMovementAudit TO app_login;  -- audit trail no longer append-only
 ```
 
-**Why it's wrong:** DDM gives a false sense of protection while the PAN sits in cleartext; the CVV is stored at all (PCI-DSS red line); `MD5`/unkeyed hashing is both broken crypto and PCI-noncompliant; `ON_FAILURE = CONTINUE` plus `UPDATE/DELETE` grants on the audit table let money move un-audited and let a DBA erase the trail — exactly what Ledger + `FAIL_OPERATION` + append-only grants exist to prevent. See [`refusal/refusal-policy.md`](../refusal/refusal-policy.md) rules 1, 3, 4, 6, 10.
+**Why it's wrong:** DDM gives a false sense of protection while the PAN sits in cleartext; the CVV is stored at all (PCI-DSS red line); `MD5`/unkeyed hashing is both broken crypto and PCI-noncompliant; `ON_FAILURE = CONTINUE` plus `UPDATE/DELETE` grants on the audit table let money move un-audited and let a DBA erase the trail — exactly what Ledger + `FAIL_OPERATION` + append-only grants exist to prevent. See [`refusal/refusal-policy.md`](../refusal/refusal-policy.md) FCS-PAN-001/FCS-SAD-001/FCS-LOG-001, 6, 10.

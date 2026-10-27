@@ -69,7 +69,7 @@ value class Pan(private val value: String) {
 
 Beware: a Kotlin **`data class` auto-generates a `toString()` that prints every property** — a `data class Card(val pan: String, val cvv: String)` will dump both if interpolated into a log line. Never make PAN/CVV/password plain properties of a `data class`; wrap them in a masking type or keep them out of the class.
 
-**What is NEVER logged:** CVV/CVC, full PAN, full track/magstripe/chip data, PIN or PIN block, plaintext passwords or password hashes, private keys, symmetric data keys, full OAuth/refresh tokens, full national IDs. (Refusal policy rules 1, 3, 4.)
+**What is NEVER logged:** CVV/CVC, full PAN, full track/magstripe/chip data, PIN or PIN block, plaintext passwords or password hashes, private keys, symmetric data keys, full OAuth/refresh tokens, full national IDs. (Refusal policy FCS-PAN-001/FCS-SAD-001/FCS-LOG-001.)
 
 **Log integrity:** money-movement and security events must be tamper-evident — a dedicated append-only DB table with no `UPDATE`/`DELETE` grant to the app role, a **WORM** sink (S3 Object Lock), or hash-chained audit rows (`row.hash = SHA-256(prevHash || canonical(row))`). NTP-sync the hosts. PCI-DSS v4.0.1 Req. 10 and SOX both require this.
 
@@ -89,7 +89,7 @@ Beware: a Kotlin **`data class` auto-generates a `toString()` that prints every 
 1. **Authenticate & authorize** — Spring: `@PreAuthorize("hasAuthority('transfer.execute')")`; Ktor: `authenticate("auth-jwt") { ... }` + an explicit ownership check. Confirm the caller controls the source account. Fail closed.
 2. **Validate at the boundary** — explicit currency; amount as `BigDecimal` or a minor-unit `Long` — **never `Double`/`Float`** (core rule). Kotlin `require(...)` / Bean Validation.
 3. **Idempotency gate** — require a client `Idempotency-Key`; look it up first and return the stored result on a repeat. Persist the key in the **same transaction** as the effect with a unique constraint, so a concurrent retry collides rather than double-spends.
-4. **Approval gates** — maker-checker / dual control, limit thresholds, SCA step-up, sanctions/AML hold **before** funds move. Onboarding: KYC/sanctions screening must pass before the account is usable (refusal rule 5).
+4. **Approval gates** — maker-checker / dual control, limit thresholds, SCA step-up, sanctions/AML hold **before** funds move. Onboarding: KYC/sanctions screening must pass before the account is usable (FCS-AML-001).
 5. **Execute inside ONE DB transaction** — debit, credit, ledger rows, and the **audit record** commit atomically or roll back together.
 6. **Audit record** — actor, action, server-UTC time, source, destination, amount+currency, idempotency key, before/after balances. Append-only.
 7. **Emit event / notify** — only **after commit**.
@@ -176,7 +176,7 @@ argon2.wipeArray(password)                               // zero the char[] when
 
 - **bcrypt** truncates input at **72 bytes** — pre-hash long/Unicode passwords (SHA-256 → Base64) before bcrypt, or use Argon2.
 - **PBKDF2** only where **FIPS 140** forbids Argon2/bcrypt — then ≥600,000 HMAC-SHA256 iterations (OWASP).
-- **Forbidden:** MD5, SHA-1, plain SHA-256/512 for passwords, unsalted or reversible schemes (refusal rules 2, 4). Do **not** hash passwords on the Android client.
+- **Forbidden:** MD5, SHA-1, plain SHA-256/512 for passwords, unsalted or reversible schemes (refusal FCS-SECRET-001/FCS-CRYPTO-001). Do **not** hash passwords on the Android client.
 
 ### Encrypted two-way — SERVER
 
@@ -201,7 +201,7 @@ fun encrypt(dataKey: ByteArray /*256-bit*/, plaintext: ByteArray, aad: ByteArray
 
 **Key management — envelope encryption with a KMS/HSM:** master key in **AWS KMS / Azure Key Vault / GCP KMS / HashiCorp Vault Transit / Thales HSM** — never in the JVM, config, or source. `GenerateDataKey` → use the plaintext data key in-memory, store the encrypted data key beside the ciphertext, decrypt via KMS at read time. **Zero** the plaintext data key (`dataKey.fill(0)`) after use. **Rotate** master keys and re-wrap on schedule; support decrypting old-key data during rotation. Crypto-shredding (drop the data key) satisfies "right to erasure".
 
-**Forbidden (refusal rule 4):** hardcoded keys/IVs, static/reused IVs, `AES/ECB/*`, `DES`/`3DES`, `Cipher.getInstance("AES")` with no mode (**defaults to ECB** — a trap), home-rolled crypto, `Random`/`Math.random()`/`kotlin.random.Random` for keys/IVs (use `SecureRandom`), disabling TLS/cert validation (rule 8). TLS 1.2+ everywhere.
+**Forbidden (FCS-CRYPTO-001):** hardcoded keys/IVs, static/reused IVs, `AES/ECB/*`, `DES`/`3DES`, `Cipher.getInstance("AES")` with no mode (**defaults to ECB** — a trap), home-rolled crypto, `Random`/`Math.random()`/`kotlin.random.Random` for keys/IVs (use `SecureRandom`), disabling TLS/cert validation (FCS-TLS-001). TLS 1.2+ everywhere.
 
 ### Encrypted two-way — ANDROID (hardware-backed, the big difference)
 
@@ -233,7 +233,7 @@ kg.init(spec); kg.generateKey()
 - **EncryptedSharedPreferences / Jetpack Security `security-crypto`: deprecated.** The stable **1.1.0** release (July 30, 2025) shipped with **every API deprecated** (`MasterKey.Builder`, `EncryptedSharedPreferences`, `EncryptedFile`), and the old `MasterKeys` helper was removed earlier. It still *functions*, so legacy code is fine short-term, but **new code should not adopt it**. Google's direction is **Jetpack DataStore + Google Tink** (`tink-android`) for key-value secrets, or **direct Android Keystore** use as above. Do not follow pre-2025 tutorials that present `MasterKeys`/EncryptedSharedPreferences as current.
 - **Never** hardcode a key in the APK, in `strings.xml`, in `BuildConfig`, in `gradle.properties`, or in native `.so` — it is trivially extractable. The only root of trust on device is the Keystore-held key.
 - For a local encrypted DB (e.g. **SQLCipher** for Room), store the SQLCipher passphrase as a Keystore-wrapped blob, never in prefs as plaintext.
-- TLS: use the platform trust store + **certificate/public-key pinning** (Network Security Config `<pin-set>` or OkHttp `CertificatePinner`). **Never** ship a `TrustManager` that accepts all certs or a `HostnameVerifier` returning `true` (rule 8).
+- TLS: use the platform trust store + **certificate/public-key pinning** (Network Security Config `<pin-set>` or OkHttp `CertificatePinner`). **Never** ship a `TrustManager` that accepts all certs or a `HostnameVerifier` returning `true` (FCS-TLS-001).
 
 ## Country differences (how the same Kotlin code changes)
 
@@ -319,17 +319,17 @@ class SecureTokenStore(private val context: Context) {
 @PostMapping("/pay")
 fun pay(@RequestParam pan: String, @RequestParam cvv: String, amount: Double): String {
 
-    log.info { "charging card $pan cvv $cvv amount $amount" }   // logs PAN+CVV — rules 1,3
+    log.info { "charging card $pan cvv $cvv amount $amount" }   // logs PAN+CVV — FCS-PAN-001/FCS-SAD-001/FCS-LOG-001
 
-    user.password = password                                    // plaintext password — rule 2
-    user.passwordMd5 = DigestUtils.md5Hex(password)             // broken hash — rules 2,4
+    user.password = password                                    // plaintext password — FCS-SECRET-001
+    user.passwordMd5 = DigestUtils.md5Hex(password)             // broken hash — FCS-SECRET-001/FCS-CRYPTO-001
 
-    val c = Cipher.getInstance("AES")                           // defaults to AES/ECB — rule 4
-    val k = SecretKeySpec("hardcoded-secret".toByteArray(), "AES")  // hardcoded key — rules 4,7
+    val c = Cipher.getInstance("AES")                           // defaults to AES/ECB — FCS-CRYPTO-001
+    val k = SecretKeySpec("hardcoded-secret".toByteArray(), "AES")  // hardcoded key — FCS-SECRET-002/FCS-CRYPTO-001
 
     transaction {                                               // NOT newSuspendedTransaction in a coroutine
         account.balance = account.balance - amount              // Double money, no version,
-        dest.balance = dest.balance + amount                    // no idempotency, no lock, no audit — rule 6
+        dest.balance = dest.balance + amount                    // no idempotency, no lock, no audit — FCS-AUDIT-001
     }
     return "ok"
 }
@@ -337,11 +337,11 @@ fun pay(@RequestParam pan: String, @RequestParam cvv: String, amount: Double): S
 
 ```kotlin
 // ❌ ANDROID: plaintext secrets on a device you don't control — refuse.
-Log.d("pay", "pan=$pan cvv=$cvv token=$sessionToken")           // logcat leak — rules 1,3 (MASVS-STORAGE)
-prefs.edit().putString("session_token", sessionToken).apply()   // plaintext SharedPreferences — rule 7
-val KEY = "0123456789abcdef0123456789abcdef"                     // hardcoded key in the APK — rules 4,7
+Log.d("pay", "pan=$pan cvv=$cvv token=$sessionToken")           // logcat leak — FCS-PAN-001/FCS-SAD-001/FCS-LOG-001 (MASVS-STORAGE)
+prefs.edit().putString("session_token", sessionToken).apply()   // plaintext SharedPreferences — FCS-SECRET-002
+val KEY = "0123456789abcdef0123456789abcdef"                     // hardcoded key in the APK — FCS-SECRET-002/FCS-CRYPTO-001
 // deprecated path many tutorials still show:
 EncryptedSharedPreferences.create(...)                          // deprecated API; use Keystore/DataStore+Tink
 ```
 
-Red lines crossed: storing/logging PAN & CVV (PCI-DSS, rules 1, 3), plaintext/MD5 passwords (rules 2, 4), AES-ECB + hardcoded key (rules 4, 7), floating-point money (core), wrong coroutine transaction (`transaction` not `newSuspendedTransaction` → broken connection affinity), no idempotency/lock/audit on money movement (rule 6), plaintext secrets and hardcoded keys on an untrusted device (rule 7), secrets in logcat (MASVS-STORAGE). The compliant alternatives are the *Good example* above, tokenization of the card via the processor, and hardware-backed Keystore storage on Android. See [`refusal/refusal-policy.md`](../refusal/refusal-policy.md).
+Red lines crossed: storing/logging PAN & CVV (PCI-DSS, FCS-PAN-001/FCS-SAD-001/FCS-LOG-001), plaintext/MD5 passwords (FCS-SECRET-001/FCS-CRYPTO-001), AES-ECB + hardcoded key (FCS-SECRET-002/FCS-CRYPTO-001), floating-point money (core), wrong coroutine transaction (`transaction` not `newSuspendedTransaction` → broken connection affinity), no idempotency/lock/audit on money movement (FCS-AUDIT-001), plaintext secrets and hardcoded keys on an untrusted device (FCS-SECRET-002), secrets in logcat (MASVS-STORAGE). The compliant alternatives are the *Good example* above, tokenization of the card via the processor, and hardware-backed Keystore storage on Android. See [`refusal/refusal-policy.md`](../refusal/refusal-policy.md).

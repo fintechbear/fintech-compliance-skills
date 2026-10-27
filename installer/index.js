@@ -300,13 +300,17 @@ function buildCodexBlock(skills, relRoot) {
   md += `the non-compliant code.\n\n## Always load\n\n`;
   md += `- \`${p('core', 'secure-fintech-coding.md')}\` — baseline for all financial code\n`;
   md += `- \`${p('refusal', 'refusal-policy.md')}\` — hard limits / when to say no\n\n`;
-  const order = ['global', 'regional', 'languages', 'databases'];
-  const titleFor = { global: 'Load for the framework in scope', regional: "Load for the user's jurisdiction",
+  const order = ['core', 'global', 'regional', 'languages', 'databases'];
+  const titleFor = { core: 'Load for the task you are doing', global: 'Load for the framework in scope', regional: "Load for the user's jurisdiction",
     languages: 'Load the one you are coding in', databases: 'Load the one you store in' };
+  // secure-fintech-coding is already in "Always load"; don't list it twice.
+  const alwaysCore = new Set(['secure-fintech-coding.md']);
   for (const g of order) {
     if (!byGroup[g]) continue;
+    const items = byGroup[g].filter((s) => !(g === 'core' && alwaysCore.has(s.file)));
+    if (!items.length) continue;
     md += `## ${g[0].toUpperCase() + g.slice(1)} — ${titleFor[g]}\n\n`;
-    for (const s of byGroup[g]) md += `- \`${p(g, s.file)}\` — ${parseSkill(s.abs).desc}\n`;
+    for (const s of items) md += `- \`${p(g, s.file)}\` — ${parseSkill(s.abs).desc}\n`;
     md += `\n`;
   }
   md += `> These rule files were installed next to this AGENTS.md under \`${relRoot}/\`.\n`;

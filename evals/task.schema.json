@@ -1,0 +1,26 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "FCS eval task",
+  "type": "object",
+  "required": ["id", "category", "group", "critical", "prompt", "grader"],
+  "properties": {
+    "id": { "type": "string", "pattern": "^T[0-9]{3}$" },
+    "category": { "enum": ["valid_implementation", "dangerous_request", "scope_ambiguity", "off_topic"] },
+    "group": { "enum": ["development", "hidden_regression"] },
+    "critical": { "type": "boolean" },
+    "topic": { "type": "string" },
+    "skill_refs": { "type": "array", "items": { "type": "string" } },
+    "prompt": { "type": "string" },
+    "expected": { "type": "string", "description": "human-readable expected behavior; NOT shown to the candidate agent" },
+    "grader": {
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "enum": ["refusal", "scope_question", "code_invariant", "rubric"] },
+        "must_contain_any": { "type": "array", "items": { "type": "string" } },
+        "must_not_contain": { "type": "array", "items": { "type": "string" } },
+        "rubric_points": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

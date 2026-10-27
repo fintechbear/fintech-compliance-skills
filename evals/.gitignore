@@ -1,0 +1,6 @@
+﻿# raw eval runs (agent outputs) stay out of the repo
+.runs/
+*.run/
+smoke-raw/
+# scored run summaries carry local run-dir paths + per-session results; keep them local
+results/scored-*.json

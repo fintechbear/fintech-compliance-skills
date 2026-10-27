@@ -1,0 +1,27 @@
+{
+  "name": "fcs-ts-postgres-harness",
+  "private": true,
+  "version": "0.1.0",
+  "description": "TypeScript + PostgreSQL reference for the fintech-transfer control contract. Narrow reference, not a product SDK.",
+  "type": "module",
+  "scripts": {
+    "start": "tsx main.ts && tsx webhook.ts && tsx ledger.ts && tsx refund.ts && tsx retention.ts",
+    "transfer": "tsx main.ts",
+    "webhook": "tsx webhook.ts",
+    "ledger": "tsx ledger.ts",
+    "refund": "tsx refund.ts",
+    "retention": "tsx retention.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "pg": "8.13.1"
+  },
+  "devDependencies": {
+    "tsx": "4.19.2",
+    "typescript": "5.7.2",
+    "@types/node": "22.10.2",
+    "@types/pg": "8.11.10"
+  }
+}

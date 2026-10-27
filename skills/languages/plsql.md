@@ -61,7 +61,7 @@ END;
 /
 ```
 
-**What is NEVER logged:** CVV/CVC, full PAN, full track/magstripe/chip data, PIN or PIN block, plaintext passwords or their hashes, private keys, symmetric data keys or TDE master keys, full session/refresh tokens, full national IDs. (Refusal policy rules 1, 3, 4.)
+**What is NEVER logged:** CVV/CVC, full PAN, full track/magstripe/chip data, PIN or PIN block, plaintext passwords or their hashes, private keys, symmetric data keys or TDE master keys, full session/refresh tokens, full national IDs. (Refusal policy FCS-PAN-001/FCS-SAD-001/FCS-LOG-001.)
 
 **Log integrity (tamper-evident):** the app audit table must be append-only — grant the application role only `INSERT` (and `SELECT` where needed), never `UPDATE`/`DELETE`; put the table in a schema the app role cannot `ALTER`. Reinforce with a row-hash chain (`row.hash = DBMS_CRYPTO.HASH(prev_hash || canonical_row, DBMS_CRYPTO.HASH_SH256)`) so any edit/delete breaks the chain, and prefer the kernel-written `UNIFIED_AUDIT_TRAIL` (which the app role cannot touch at all) for the authoritative trail. Keep hosts NTP-synced so timestamps are trustworthy, and stamp UTC (`SYSTIMESTAMP AT TIME ZONE 'UTC'`). PCI-DSS v4.0.1 Req. 10 and SOX both require this.
 
@@ -72,7 +72,7 @@ Canonical money-movement step order in a PL/SQL package:
 1. **Authenticate & authorize — fail closed.** Confirm the invoking end user (not the pooled technical account) owns/controls the source account. Use `SYS_CONTEXT('USERENV','CLIENT_IDENTIFIER')` (set by the app per request) and enforce via a definer-rights check or **Virtual Private Database (VPD)** predicate. Raise and stop on any doubt.
 2. **Validate at the boundary.** Explicit currency; amount as `NUMBER` (Oracle `NUMBER` is exact decimal — **never** `BINARY_FLOAT`/`BINARY_DOUBLE` for money). Reject non-positive amounts. Validate identifiers (TCKN checksum, IBAN mod-97) before use.
 3. **Idempotency gate.** Require a client idempotency key; keep an `idempotency_keys` table with a `UNIQUE` constraint. `INSERT` the key first; a duplicate raises `DUP_VAL_ON_INDEX` — catch it and return the stored prior result instead of re-executing. Persist the key in the *same* transaction as the effect so a concurrent retry collides rather than double-spends.
-4. **Approval / compliance gates — before funds move.** Maker-checker / dual control and limit thresholds; PSD2 SCA step-up; sanctions/AML/MASAK hold. For onboarding, KYC and sanctions screening must pass before the account is usable (refusal rule 5).
+4. **Approval / compliance gates — before funds move.** Maker-checker / dual control and limit thresholds; PSD2 SCA step-up; sanctions/AML/MASAK hold. For onboarding, KYC and sanctions screening must pass before the account is usable (FCS-AML-001).
 5. **Execute inside ONE transaction.** Lock the account rows with `SELECT ... FOR UPDATE` in a **deterministic order** (e.g. ascending `account_id`) to prevent deadlocks; debit source, credit destination, write ledger rows. Do **not** `COMMIT` mid-procedure; let the caller own the transaction boundary, or commit once at the end. If anything fails, the whole unit rolls back.
 6. **Audit record — written so it survives.** The *business* audit row for a *completed* transfer goes in the same transaction as the effect (it must not persist for a transfer that didn't happen, nor be missing for one that did). The *attempt/failure/security* record goes through an **autonomous-transaction** logging call so it persists even when the business transaction rolls back (see Hashing & encryption note on autonomous transactions below).
 7. **Notify after commit only** — downstream (Advanced Queuing / event) must never see an uncommitted transfer; enqueue in-transaction so the message is delivered only on commit, or use a post-commit trigger/outbox.
@@ -148,7 +148,7 @@ END;
 - **Preferred: hash application-user passwords in the application tier with Argon2id** (OWASP: m ≥ 19 MiB, t = 2, p = 1), storing only the resulting hash in Oracle. This is the recommendation echoed by Oracle practitioners (AskTom / community): keep the password hashing portable and outside the database.
 - **If it must be in-database:** use **PBKDF2** — Oracle's own docs describe deriving key material from a password via PBKDF2, and later `DBMS_CRYPTO` exposes a key-derivation path. Use a **random per-user salt** (`DBMS_CRYPTO.RANDOMBYTES`) and a **high iteration count** (OWASP PBKDF2-HMAC-SHA256 ≥ 600,000). A hand-rolled "salt + one SHA-256" is forbidden.
 - **Database account passwords** (not app users) are a separate concern: let Oracle manage them with a strong verifier (`SQLNET.ALLOWED_LOGON_VERSION_SERVER=12a`, which uses a salted PBKDF2-based SHA-2 verifier) and a profile-enforced password policy — never store or reimplement these yourself.
-- **Forbidden:** MD5, MD4, SHA-1 for passwords or integrity; plain/single-round SHA-2 as a password hash; unsalted or reversible password storage; `DBMS_OBFUSCATION_TOOLKIT` (deprecated for years, **removed in Oracle 21c** — references now fail to compile); DES/3DES/RC4 and ECB mode (deprecated from 21c; MD4/MD5/DES/3DES/RC4 flagged deprecated). (Refusal rules 2, 4.)
+- **Forbidden:** MD5, MD4, SHA-1 for passwords or integrity; plain/single-round SHA-2 as a password hash; unsalted or reversible password storage; `DBMS_OBFUSCATION_TOOLKIT` (deprecated for years, **removed in Oracle 21c** — references now fail to compile); DES/3DES/RC4 and ECB mode (deprecated from 21c; MD4/MD5/DES/3DES/RC4 flagged deprecated). (Refusal FCS-SECRET-001/FCS-CRYPTO-001.)
 
 ### Autonomous transactions for audit (Oracle-specific pattern)
 
@@ -280,7 +280,7 @@ CREATE OR REPLACE PROCEDURE pay(p_user VARCHAR2, p_pan VARCHAR2,
                                 p_cvv VARCHAR2, p_amount BINARY_DOUBLE) IS
   l_sql VARCHAR2(4000);
 BEGIN
-  -- logs PAN + CVV (rules 1,3) and uses DBMS_OUTPUT for "audit"
+  -- logs PAN + CVV (FCS-PAN-001/FCS-SAD-001/FCS-LOG-001) and uses DBMS_OUTPUT for "audit"
   DBMS_OUTPUT.PUT_LINE('charging '||p_pan||' cvv '||p_cvv||' amt '||p_amount);
 
   -- SQL injection: user value concatenated straight into the statement (no bind)
@@ -288,20 +288,20 @@ BEGIN
            ' WHERE owner = '''||p_user||'''';
   EXECUTE IMMEDIATE l_sql;                              -- injectable; and BINARY_DOUBLE money
 
-  -- stores CVV (rule 1) and a plaintext / MD5 password (rules 2,4)
+  -- stores CVV (FCS-PAN-001/FCS-SAD-001) and a plaintext / MD5 password (FCS-SECRET-001/FCS-CRYPTO-001)
   INSERT INTO cards(pan, cvv) VALUES (p_pan, p_cvv);
   UPDATE users SET pwd_md5 = DBMS_CRYPTO.HASH(UTL_RAW.CAST_TO_RAW(p_user),
                                               DBMS_CRYPTO.HASH_MD5)  -- broken hash
    WHERE username = p_user;
 
-  -- AES in ECB with a hardcoded key (rules 4,7)
+  -- AES in ECB with a hardcoded key (FCS-SECRET-002/FCS-CRYPTO-001)
   INSERT INTO secrets(blob_val) VALUES (
     DBMS_CRYPTO.ENCRYPT(UTL_RAW.CAST_TO_RAW(p_pan),
       DBMS_CRYPTO.ENCRYPT_AES256 + DBMS_CRYPTO.CHAIN_ECB + DBMS_CRYPTO.PAD_PKCS5,
       UTL_RAW.CAST_TO_RAW('hardcoded-key-0123456789abcdef')));
-  COMMIT;                                               -- no idempotency, no lock, no real audit (rule 6)
+  COMMIT;                                               -- no idempotency, no lock, no real audit (FCS-AUDIT-001)
 END;
 /
 ```
 
-Red lines crossed: logging PAN & CVV and *storing* CVV (PCI-DSS, rules 1, 3), SQL injection via concatenated dynamic SQL (no bind, no `DBMS_ASSERT`), `BINARY_DOUBLE` for money (core rule — use exact `NUMBER`), MD5 password hash + no salt (rules 2, 4), AES-**ECB** with a **hardcoded key** (rules 4, 7), no idempotency/row lock (lost update), and no tamper-evident audit on money movement (rule 6). The compliant alternatives are the *Good example* above: bound values, `DBMS_ASSERT` for identifiers, exact `NUMBER`, Argon2id/PBKDF2 for passwords, AES-256-CBC+HMAC (or app-tier AES-GCM) with KMS keys, TDE at rest, and an append-only autonomous-transaction audit trail. See [`refusal/refusal-policy.md`](../refusal/refusal-policy.md).
+Red lines crossed: logging PAN & CVV and *storing* CVV (PCI-DSS, FCS-PAN-001/FCS-SAD-001/FCS-LOG-001), SQL injection via concatenated dynamic SQL (no bind, no `DBMS_ASSERT`), `BINARY_DOUBLE` for money (core rule — use exact `NUMBER`), MD5 password hash + no salt (FCS-SECRET-001/FCS-CRYPTO-001), AES-**ECB** with a **hardcoded key** (FCS-SECRET-002/FCS-CRYPTO-001), no idempotency/row lock (lost update), and no tamper-evident audit on money movement (FCS-AUDIT-001). The compliant alternatives are the *Good example* above: bound values, `DBMS_ASSERT` for identifiers, exact `NUMBER`, Argon2id/PBKDF2 for passwords, AES-256-CBC+HMAC (or app-tier AES-GCM) with KMS keys, TDE at rest, and an append-only autonomous-transaction audit trail. See [`refusal/refusal-policy.md`](../refusal/refusal-policy.md).

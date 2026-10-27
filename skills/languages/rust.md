@@ -30,7 +30,7 @@ High-assurance services log heavily; redaction must be a **security boundary, no
 
 **What is MASKED before it reaches any sink.** PAN (show at most first-6/last-4, e.g. `411111******1111`), CVV/CVC (never — not even masked), passwords, password hashes, API keys/secrets, bearer/refresh tokens, full national IDs (KVKK/GDPR), private keys, full IBAN (mask to last 4), session cookies, OTP codes, encryption keys.
 
-**What is NEVER logged, at any level.** CVV/CVC/CVV2, full track/magstripe data, PIN or PIN blocks, the raw request body of a card-entry endpoint, plaintext passwords, the AES data key or KMS plaintext key, and the full PAN. These are refusal-policy red lines (rules 1, 3, 4).
+**What is NEVER logged, at any level.** CVV/CVC/CVV2, full track/magstripe data, PIN or PIN blocks, the raw request body of a card-entry endpoint, plaintext passwords, the AES data key or KMS plaintext key, and the full PAN. These are refusal-policy red lines (FCS-PAN-001/FCS-SAD-001/FCS-LOG-001).
 
 **Redaction mechanism — the type system is the allow-list.** A regex deny-list over free text fails the moment data is JSON-escaped, wrapped in an error, or a field is renamed. In Rust, make the compiler enforce redaction:
 
@@ -75,10 +75,10 @@ Add a `tracing_subscriber::Layer` as a second line of defence that drops any fie
 
 Canonical money-movement order, each step mapped to the Rust mechanism that enforces it:
 
-1. **Authenticate + authorize** the caller. Check least-privilege role/scope before anything else (refusal rule 10). Carry identity + request-scoped values through the call graph in an explicit `Context` struct or a `tracing` span field — never a global `static mut`.
+1. **Authenticate + authorize** the caller. Check least-privilege role/scope before anything else (FCS-AUTHZ-001). Carry identity + request-scoped values through the call graph in an explicit `Context` struct or a `tracing` span field — never a global `static mut`.
 2. **Validate** amount (minor units / `Decimal`, see Hashing/Money), currency, accounts. Model states as an `enum` so an invalid transition fails to compile; reject at the edge.
 3. **Idempotency gate.** Require an idempotency key on every mutating payment endpoint. Look it up first; if seen, return the stored result without re-executing. This is the single most important defence against double-charges on retries/timeouts.
-4. **AML / sanctions / KYC** screening on onboarding and on transfers where required. A hit is a `warn` + audit + hold, never a silent pass (refusal rule 5).
+4. **AML / sanctions / KYC** screening on onboarding and on transfers where required. A hit is a `warn` + audit + hold, never a silent pass (FCS-AML-001).
 5. **Open a DB transaction** (`pool.begin().await?` with `sqlx`); do the balance read, the invariant check, the debit/credit, **and the audit insert** inside the *same* transaction so they commit or roll back atomically. If you never call `.commit()`, `sqlx` **rolls back on drop** — the safe default.
 6. **Approval gate** for flows above threshold (dual control / maker-checker): write a pending record, require a second authorized principal to approve before the transfer posts.
 7. **Write the audit record** (actor, action, source/dest, amount, idempotency key, decision, timestamp, request id) to the append-only store *within* the transaction.
@@ -180,7 +180,7 @@ fn verify_password(pw: &[u8], phc: &str) -> Result<bool, argon2::password_hash::
 }
 ```
 
-**bcrypt fallback.** The [`bcrypt`](https://docs.rs/bcrypt) crate with `cost >= 12` is acceptable where Argon2 is unavailable, but bcrypt silently truncates input at **72 bytes** — prefer Argon2id. **Never MD5 or SHA-1** for passwords or integrity (refusal rule 4).
+**bcrypt fallback.** The [`bcrypt`](https://docs.rs/bcrypt) crate with `cost >= 12` is acceptable where Argon2 is unavailable, but bcrypt silently truncates input at **72 bytes** — prefer Argon2id. **Never MD5 or SHA-1** for passwords or integrity (FCS-CRYPTO-001; passwords also FCS-SECRET-001).
 
 **Encrypted two-way — PAN / IBAN / national ID.** Use **AES-256-GCM** (authenticated encryption: confidentiality + tamper detection). Two audited options:
 
@@ -188,7 +188,7 @@ fn verify_password(pw: &[u8], phc: &str) -> Result<bool, argon2::password_hash::
 - [`ring`](https://docs.rs/ring) — `aead::AES_256_GCM` via `LessSafeKey`/`SealingKey` (BoringSSL-derived, assembly-optimized). Equally valid; pick `ring` where you already depend on it or want its performance, `aes-gcm` for pure-Rust/`no_std` portability. **Do not roll your own around a bare block cipher.**
 
 Rules for either:
-- **Key:** 32 bytes (AES-256), a **data key** issued by a KMS under envelope encryption — call KMS `GenerateDataKey`, use the plaintext data key in memory only, store the KMS-wrapped data key alongside the ciphertext, and zeroize the plaintext key after use (`zeroize` crate / `Zeroizing`). Never a static/hardcoded key (refusal rules 4, 7).
+- **Key:** 32 bytes (AES-256), a **data key** issued by a KMS under envelope encryption — call KMS `GenerateDataKey`, use the plaintext data key in memory only, store the KMS-wrapped data key alongside the ciphertext, and zeroize the plaintext key after use (`zeroize` crate / `Zeroizing`). Never a static/hardcoded key (refusal FCS-SECRET-002/FCS-CRYPTO-001).
 - **Nonce:** 12 bytes, **fresh from a CSPRNG (`OsRng`) for every encryption**, stored with the ciphertext. **Reusing a nonce with the same key is catastrophic for GCM** — it leaks the XOR of plaintexts and can expose the authentication key. For very high message volumes per key, use a key-committing / nonce-extended construction (e.g. `XAES-256-GCM`) or rotate keys before the random-nonce birthday bound.
 - Bind context with GCM's additional authenticated data (AAD), e.g. the record id, so a ciphertext cannot be relocated to another row.
 
@@ -206,7 +206,7 @@ fn encrypt(data_key: &[u8; 32], plaintext: &[u8], aad: &[u8]) -> Result<Vec<u8>,
 }
 ```
 
-**Key management & rotation.** Keys live in a KMS/HSM (AWS KMS, GCP KMS, Azure Key Vault, or a PKCS#11 HSM), never in source, `.env` committed to git, or repo config. Use envelope encryption (KMS-wrapped data keys). Rotate the KMS master key on schedule; store a key id/version with each ciphertext so old data stays decryptable through rotation. Transport is TLS 1.2+ with certificate validation on (`rustls` verifies by default) — never a custom `ServerCertVerifier` that accepts everything, and never `danger_accept_invalid_certs(true)` on `reqwest` in production (refusal rule 8).
+**Key management & rotation.** Keys live in a KMS/HSM (AWS KMS, GCP KMS, Azure Key Vault, or a PKCS#11 HSM), never in source, `.env` committed to git, or repo config. Use envelope encryption (KMS-wrapped data keys). Rotate the KMS master key on schedule; store a key id/version with each ciphertext so old data stays decryptable through rotation. Transport is TLS 1.2+ with certificate validation on (`rustls` verifies by default) — never a custom `ServerCertVerifier` that accepts everything, and never `danger_accept_invalid_certs(true)` on `reqwest` in production (FCS-SECRET-002).
 
 **Forbidden (refusal red lines):** MD5/SHA-1 for passwords or integrity, DES/3DES, AES-**ECB** mode, home-rolled crypto, static or hardcoded keys/IVs, nonce/IV reuse, reversible encryption of passwords, the `rand` crate's `thread_rng` for key/nonce material (use an OS CSPRNG / `OsRng`), non-constant-time comparison of secrets (use `subtle::ConstantTimeEq`), `f64` money, and silent integer-overflow on balances.
 
@@ -224,7 +224,7 @@ The Rust primitives stay the same; configuration, data residency, and extra gate
 ```rust
 // ✅ Good — tokenize, never hold raw PAN/CVV; idempotent, audited, Decimal money, panic-free.
 async fn charge(pool: &PgPool, cmd: &ChargeCmd) -> Result<Receipt, AppError> {
-    if !cmd.actor.can("payments.charge") {          // least privilege (rule 10)
+    if !cmd.actor.can("payments.charge") {          // least privilege (FCS-AUTHZ-001)
         return Err(AppError::Forbidden);
     }
     if let Some(prev) = find_applied(pool, &cmd.idem_key).await? { // idempotency
@@ -258,16 +258,16 @@ async fn charge(pool: &PgPool, cmd: &ChargeCmd) -> Result<Receipt, AppError> {
 ```rust
 // ❌ Bad — multiple red lines; an agent must REFUSE to write this.
 async fn charge(pool: &PgPool, pan: &str, cvv: &str, amount: f64) {   // f64 money — rounding errors
-    let sql = format!("INSERT INTO cards(pan,cvv) VALUES('{pan}','{cvv}')"); // stores PAN+CVV (rule 1) + SQL injection
+    let sql = format!("INSERT INTO cards(pan,cvv) VALUES('{pan}','{cvv}')"); // stores PAN+CVV (FCS-PAN-001/FCS-SAD-001) + SQL injection
     sqlx::query(&sql).execute(pool).await.unwrap();                   // .unwrap() in a payment path → panic DoS
-    tracing::info!("charging card {pan} cvv {cvv}");                  // logs PAN + CVV (rule 3)
-    let key = b"1234567890123456";                                   // hardcoded 16-byte key (rule 7)
-    let digest = md5::compute(password);                             // MD5 password hash (rules 2, 4)
+    tracing::info!("charging card {pan} cvv {cvv}");                  // logs PAN + CVV (FCS-LOG-001)
+    let key = b"1234567890123456";                                   // hardcoded 16-byte key (FCS-SECRET-002)
+    let digest = md5::compute(password);                             // MD5 password hash (FCS-SECRET-001/FCS-CRYPTO-001)
     let _ = (key, digest);
 }
 ```
 
-**Why refuse:** this crosses refusal-policy rules 1 (store PAN/CVV), 2 (broken password hash), 3 (log PAN/CVV), 4 (broken crypto, hardcoded key, MD5), and 7 (hardcoded credential), plus SQL injection, `f64` money, and a panic-prone payment path. The compliant rewrite is the Good example: tokenize at the gateway, store only the token + masked PAN, Argon2id for passwords, AES-256-GCM (`aes-gcm` or `ring`) with a KMS data key and a random per-message nonce, compile-checked parameterized `sqlx`, `rust_decimal`/integer minor units, no `unwrap` in the hot path, and an atomic audit insert.
+**Why refuse:** this crosses refusal-policy FCS-PAN-001/FCS-SAD-001 (store PAN/CVV), FCS-SECRET-001/FCS-CRYPTO-001 (broken password hash), FCS-SECRET-002 (hardcoded key), FCS-AUDIT-001 (no audit). The compliant rewrite is the Good example: tokenize at the gateway, store only the token + masked PAN, Argon2id for passwords, AES-256-GCM (`aes-gcm` or `ring`) with a KMS data key and a random per-message nonce, compile-checked parameterized `sqlx`, `rust_decimal`/integer minor units, no `unwrap` in the hot path, and an atomic audit insert.
 
 ---
 
