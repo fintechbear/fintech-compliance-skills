@@ -6,7 +6,7 @@
 // integer `version` column; a duplicate idempotency key is caught by unique-violation
 // SQLSTATE 23505; serialization failures surface as 40001 and are retried.
 
-import { Pool, PoolClient } from 'pg';
+import type { Pool } from 'pg';
 import { toMinorUnits, MoneyError } from './money.ts';
 
 export type Outcome =

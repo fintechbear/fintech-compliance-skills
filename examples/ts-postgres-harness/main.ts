@@ -1,6 +1,7 @@
 // FCS transfer reference — scenario suite against a REAL PostgreSQL (no mocks).
 // Mirrors the .NET harness's invariants so the two references prove the same contract.
-import { Pool } from 'pg';
+import pg from 'pg';
+const { Pool } = pg;
 import { initSchema, seedAccount, transfer, balance, count, Faults } from './bank.ts';
 
 const PGCONN = process.env.PGCONN ?? 'postgresql://fcs:fcs@127.0.0.1:55432/fcs';
