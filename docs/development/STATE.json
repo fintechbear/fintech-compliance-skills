@@ -135,12 +135,23 @@
     },
     {
       "id": "P05",
-      "status": "TODO",
+      "status": "PASS",
       "depends_on": [
         "P04"
       ],
-      "evidence": [],
-      "blockers": []
+      "evidence": [
+        "controls: +FCS-OUTBOX/WEBHOOK/OUTCOME/LEDGER/RECON-001 (19 total)",
+        "skills/core/fintech-provider-webhook.md + fintech-ledger-reconciliation.md",
+        "examples/ts-postgres-harness/{webhook,ledger}.ts: real PostgreSQL 16.15 (debian-test) transfer 17 + webhook 9 + ledger 7 = 33/33, exit 0, clean cleanup",
+        "installer/index.js router now lists core task skills; installer 27/27",
+        "docs/development/P05.md",
+        "CI run (e2d2ae1) success"
+      ],
+      "blockers": [
+        "provider is a labelled test double, not a real sandbox (by design)",
+        "CANDIDATE agent eval deferred to P08"
+      ],
+      "validated_commit": "e2d2ae12d572182a1cf63d43cc9cb7687f7bebff"
     },
     {
       "id": "P06",

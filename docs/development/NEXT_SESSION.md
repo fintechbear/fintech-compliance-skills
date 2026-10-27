@@ -15,21 +15,24 @@
   container; **no system Node** (use `node:NN` containers), **no agent CLI**.
 - Private connection details are NOT in the repo; they were provided out of band.
 
-## Next phase: P05
+## Next phase: P06
 
-P04 is PASS (commit 5debe0a): `skills/core/fintech-transfer.md` (task-focused, FCS-id
-references, explicit metadata); `examples/ts-postgres-harness/` TS+pg reference proving the
-same contract as the .NET one — **17/17 on real PostgreSQL 16.15** (debian-test). installer
-F04/F04b now fixture-derived (no hard-coded 26); installer 27/27; CI green.
+P05 is PASS (commit e2d2ae1): provider/webhook + ledger/reconciliation skills + controls
+(FCS-OUTBOX/WEBHOOK/OUTCOME/LEDGER/RECON-001); TS references on real PostgreSQL 16.15 —
+transfer 17 + webhook 9 + ledger 7 = **33/33, exit 0**. installer router now lists core task
+skills; installer 27/27; CI green.
 
-P05 = webhook / ambiguous provider outcome / ledger / reconciliation. Add two small task
-entries (provider+webhook; ledger+reconciliation) that reference controls by FCS id. Durable
-intent/outbox before the provider call; outbound idempotency key; webhook signature on raw
-body; durable inbox + dedup via DB constraint; UnknownOutcome is NOT auto-failed and never
-blind-retried; small double-entry ledger (balanced per currency, append-only, reversal
-entries); reconciliation examples (missing/duplicate/delayed/amount-mismatch). Prove on real
-DB; a provider test-double is allowed but must be labelled as such, not a real Stripe sandbox.
-Do NOT build a new commercial connector or recon-engine product in this repo.
+P06 = three narrow workflow entries, each independently triggerable (no single mega-skill):
+(A) refund/cancel (source payment + tenant + lifecycle; partial/full; never exceed paid;
+concurrent refunds cap; unknown-outcome double-refund prevention; cancel/void/reversal/refund
+are provider-specific terms, not universal synonyms); (B) retention/erasure (data-category
+based legal basis; legal hold vs mandatory financial retention vs erasable profile data;
+crypto-shredding is NOT a universal legal erasure guarantee; over-retention AND over-deletion
+tested separately; durations are demo data, not cited regulation); (C) financial PR review
+(new code vs changed risk surface; per-finding control id + file/line + trigger + evidence +
+confidence + review limits; no unverified finding or automatic compliance score; update the
+README "not a scanner" line consistently). Qualitative review beyond deterministic tests is
+NEEDS_REVIEW / real-agent, not auto-passed.
 ## How to run things
 
 - Installer tests: `npm ci && node installer/verify.js && node --test installer/test.js`.
