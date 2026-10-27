@@ -94,7 +94,8 @@ COMMIT;
 
 ### Concurrency / locking model
 
-- **Isolation:** `READ COMMITTED` (default) is insufficient for balance arithmetic. Use `REPEATABLE READ` (snapshot) or `SERIALIZABLE` (full serialization via predicate locks) for money movement and be prepared to **retry on `serialization_failure` (SQLSTATE 40001)** — this is a feature, not an error to swallow.
+- **Isolation is not the control that makes a transfer safe — the atomic write is.** Correctness comes from an *atomic* `UPDATE` that both reads and writes the balance in one statement, a row lock, and a protected invariant (`balance >= 0`), not from mandating one isolation level for every operation. Under `READ COMMITTED` (default), `UPDATE` / `SELECT ... FOR UPDATE` re-find the target row, *wait* for any concurrent writer to commit, then re-evaluate the `WHERE` clause against the updated row version — so an atomic `UPDATE accounts SET balance = balance - $1 WHERE id = $2 AND balance >= $1` (checking `rowcount = 1`) performs a correct debit without a higher isolation level. PostgreSQL's own docs show this transfer working under Read Committed. **The race to protect against:** a *read-decide-write* pattern that reads the balance with a plain `SELECT`, decides in app code, then writes back — under Read Committed two such transactions can both read the same stale balance and double-spend (a lost update). Fold the read into the write (atomic `UPDATE`) or lock the row first (`SELECT ... FOR UPDATE`) so the invariant holds. See [PostgreSQL docs §13.2.1 Read Committed](https://www.postgresql.org/docs/current/transaction-iso.html): a concurrent updater "will wait for the first updating transaction to commit or roll back … the search condition … is re-evaluated … on the updated version of the row."
+- **When a higher level is genuinely needed:** if the logic *must* read a value in one statement and act on it in another within the same transaction (multi-row consistency, read-modify-write across tables that a single atomic `UPDATE` can't express), use `REPEATABLE READ` (snapshot) or `SERIALIZABLE` (predicate locks) and be prepared to **retry on `serialization_failure` (SQLSTATE 40001)** — that error is the feature working, not a bug to swallow.
 - **Pessimistic:** `SELECT ... FOR UPDATE` locks the account rows for the duration of the transaction; correct when contention on a single account is high and you want to avoid serialization retries.
 - **Optimistic:** a `version` column with `WHERE version = $expected` + check `rowcount = 1`; correct for low contention.
 - **Deadlock discipline:** always lock accounts in a deterministic order (e.g. by ascending account id) so two opposing transfers cannot deadlock.
@@ -177,13 +178,14 @@ hostssl  all  all  0.0.0.0/0  scram-sha-256  clientcert=verify-full
 
 ### Row-Level Security (RLS)
 
-RLS pushes tenant/ownership isolation into the engine, so a forgotten `WHERE` clause or an injection cannot cross tenants.
+RLS pushes tenant/ownership isolation into the engine: every query the app role runs is implicitly filtered by the policy's `USING`/`WITH CHECK` predicate, so a forgotten `WHERE` clause cannot silently return another tenant's rows. This is a strong containment control, **not absolute protection against SQL injection.** RLS only constrains *which rows a given role sees under a given session context* — it does nothing about injection that (a) runs as a `BYPASSRLS`/owner/superuser role, (b) targets a table with no policy, (c) reads data through a channel the policy doesn't cover, or (d) manages to change the session context variable the policy trusts. The policy below is only as trustworthy as the `app.tenant_id` value and the role it runs under.
 
 ```sql
 ALTER TABLE account ENABLE ROW LEVEL SECURITY;
 ALTER TABLE account FORCE ROW LEVEL SECURITY;   -- even the owner is constrained
 
--- Tenant isolation: a session sets its tenant via a GUC the app cannot forge upward.
+-- Tenant isolation: the policy trusts app.tenant_id, which the app MUST set from
+-- the authenticated session (SET LOCAL), never from client input. See notes below.
 CREATE POLICY tenant_isolation ON account
   USING (tenant_id = current_setting('app.tenant_id')::uuid);
 
@@ -192,7 +194,9 @@ CREATE POLICY tenant_write ON account
   FOR INSERT WITH CHECK (tenant_id = current_setting('app.tenant_id')::uuid);
 ```
 
-- Set `app.tenant_id` with `SET LOCAL` inside the transaction, from a *trusted* value derived from the authenticated session — never from user-supplied input.
+- **Who sets `app.tenant_id`, and how:** the *application server* sets it with `SET LOCAL app.tenant_id = $1` inside the transaction, from a tenant id derived from the authenticated session (a verified JWT/session claim) — **never** from user-supplied input, a query parameter, or a request header the client controls. If an attacker can influence that value, RLS enforces the attacker's choice. Prefer `SET LOCAL` (transaction-scoped) over `SET` (session-scoped) precisely so the context cannot outlive the transaction.
+- **Which SQL the app role may run:** scope the `app_rw`/`app_ro` role to least privilege — `GRANT` only the needed `SELECT/INSERT/UPDATE/DELETE` on the specific tenant tables, and ensure the role is **not** the table owner and does **not** hold `BYPASSRLS` or superuser, because all three bypass RLS. Combine RLS with parameterized queries and input validation at the app tier; RLS is the *last* line that contains a tenant-boundary mistake, not a licence to run untrusted SQL.
+- **Connection-pool context reset (critical):** pooled connections are reused across requests, so a leftover `SET` from a prior request can leak one tenant's context into the next request's queries. Use `SET LOCAL` so the value is discarded at `COMMIT`/`ROLLBACK`, and/or issue `DISCARD ALL` (or `RESET ALL`) when a connection returns to the pool. With a transaction-pooling proxy (e.g. PgBouncer in `transaction` mode), `SET LOCAL` is the correct tool because session-level `SET` is not safe across the pool.
 - RLS + object-level pgaudit on the same sensitive tables gives both *prevention* (RLS) and *detection* (audit).
 
 ## Dynamic & static data masking

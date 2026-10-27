@@ -1,0 +1,85 @@
+{
+  "note": "Byte-accurate output captured by running the REAL old installers from git history. NEVER regenerate from new code.",
+  "sources": {
+    "pr5": {
+      "commit": "b742e893f8c7eb69e194807d458b3f4f5022af7c",
+      "desc": "PR#5 first installer: unescaped frontmatter, no link rewrite, NO hash stamp",
+      "tool": "claude"
+    },
+    "pr6": {
+      "commit": "19b4f33fdec992a410fc49971129663ff6b4e24e",
+      "desc": "PR#6 installer: yamlScalar frontmatter, link rewrite, WITH hash stamp",
+      "tool": "claude"
+    }
+  },
+  "files": {
+    "pr5": {
+      "aml-kyc.SKILL.md": "d81cfba57dc297dd",
+      "cobol.SKILL.md": "6d19a30df3460d53",
+      "csharp-dotnet.SKILL.md": "996bf667ab0c8fe5",
+      "db2.SKILL.md": "946ceb1edfdfa625",
+      "eu-gdpr-psd2-dora.SKILL.md": "04e47c00c60dd0c8",
+      "go.SKILL.md": "880cc47652d80d60",
+      "iso27001-soc2.SKILL.md": "ec848221e0f84301",
+      "java.SKILL.md": "15ad79abcddbe36a",
+      "javascript-typescript.SKILL.md": "da73e45ebfb30d53",
+      "kotlin.SKILL.md": "a26f0f47c462fd48",
+      "mongodb.SKILL.md": "0336f87f7c1670f8",
+      "mysql-mariadb.SKILL.md": "fda2f37f1bb0cb59",
+      "oracle.SKILL.md": "867f7f78d0763eeb",
+      "pci-dss.SKILL.md": "52d0afebc7549deb",
+      "plsql.SKILL.md": "ce4672a8924ac737",
+      "postgresql.SKILL.md": "ee823899b980a5d7",
+      "python.SKILL.md": "fe63e0a932246a16",
+      "redis.SKILL.md": "d821af09a58ddabc",
+      "refusal-policy.SKILL.md": "eadfc78287c6f460",
+      "rust.SKILL.md": "778f4af3aa48681e",
+      "scala.SKILL.md": "b18862e2f0ad5450",
+      "secure-fintech-coding.SKILL.md": "db160b93a861ac39",
+      "sql-server.SKILL.md": "634e7da39fd97e4d",
+      "turkey-kvkk-bddk-masak.SKILL.md": "13728ee32d3af663",
+      "uk-fca-gdpr.SKILL.md": "d3c9492f911e5cbe",
+      "us-sox-glba-ccpa.SKILL.md": "81e3a61652aa47e2"
+    },
+    "pr6": {
+      "aml-kyc.SKILL.md": "82731709efe1023e",
+      "cobol.SKILL.md": "e642b9f6fddddcd1",
+      "csharp-dotnet.SKILL.md": "aa72183f577750b2",
+      "db2.SKILL.md": "2901f1d970e175b1",
+      "eu-gdpr-psd2-dora.SKILL.md": "2bbd20ff647ead55",
+      "go.SKILL.md": "4e9a9263163bb19e",
+      "iso27001-soc2.SKILL.md": "a6adaefc92763e01",
+      "java.SKILL.md": "b25bc40bd81a92dc",
+      "javascript-typescript.SKILL.md": "79dbb32ec2db34bd",
+      "kotlin.SKILL.md": "e8034fa02f396261",
+      "mongodb.SKILL.md": "6d91a556a3993ed5",
+      "mysql-mariadb.SKILL.md": "fdf2c2f2e6912d49",
+      "oracle.SKILL.md": "7b71f3351d5405a7",
+      "pci-dss.SKILL.md": "aaa274b9e46c2f09",
+      "plsql.SKILL.md": "477febb94c4d3175",
+      "postgresql.SKILL.md": "4b1da4360e936453",
+      "python.SKILL.md": "c8aa0d658ea353b1",
+      "redis.SKILL.md": "18f00fd8f3a040ab",
+      "refusal-policy.SKILL.md": "2a9b5b07bbe3bd86",
+      "rust.SKILL.md": "ce1cb1ac9bdd2fff",
+      "scala.SKILL.md": "8095200f4b149f97",
+      "secure-fintech-coding.SKILL.md": "3dfbfe78c117b9ae",
+      "sql-server.SKILL.md": "69093bb470776a69",
+      "turkey-kvkk-bddk-masak.SKILL.md": "2b25899da9f95184",
+      "uk-fca-gdpr.SKILL.md": "c43de2e50d64fb4e",
+      "us-sox-glba-ccpa.SKILL.md": "8cfba7434d3b8314"
+    }
+  },
+  "codex": {
+    "note": "Real old Codex output captured from git history for G2/G3 migration tests. Not shipped in the npm package.",
+    "pr5": {
+      "commit": "b742e893f8c7eb69e194807d458b3f4f5022af7c",
+      "produced": "AGENTS.md only (heading-led, no marker, closing blockquote note); no rule tree"
+    },
+    "pr6": {
+      "commit": "19b4f33fdec992a410fc49971129663ff6b4e24e",
+      "produced": "AGENTS.md (managed-marker block) + rule tree with NO manifest (the G3 scenario)"
+    },
+    "recognition": "runtime CODEX_LEGACY_FILE_HASHES holds byte-exact sha256(16) of each raw rule file from these installs"
+  }
+}

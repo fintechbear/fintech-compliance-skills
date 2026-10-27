@@ -42,7 +42,9 @@ try {
   run(['--tool', 'claude', '--target', cl]);
   const base = path.join(cl, '.claude', 'skills');
   const dirs = fs.readdirSync(base).filter((d) => fs.statSync(path.join(base, d)).isDirectory());
-  ok(dirs.length >= 20, `installed ${dirs.length} skills`);
+  const sourceNames = require('./index.js').listSkillFiles().map((s) => s.name);
+  ok(dirs.length === sourceNames.length && sourceNames.every((n) => dirs.includes(n)),
+    `installed inventory equals source (${dirs.length}/${sourceNames.length})`);
 
   // cross-links resolve + frontmatter valid
   let badLinks = 0, badYaml = 0;

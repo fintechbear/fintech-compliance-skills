@@ -2,23 +2,30 @@
 /*
  * fintech-compliance-skills installer
  *
- * Installs the repo's compliance skills into the agent tool of your choice:
- *   - Claude Code  -> <target>/.claude/skills/<name>/SKILL.md
- *   - Kiro         -> ~/.kiro/crew/skills/<name>/SKILL.md
- *   - Codex CLI    -> <target>/.fintech-compliance-skills/  (+ a managed block in AGENTS.md)
+ * Targets:
+ *   claude     -> <target>/.claude/skills/<name>/SKILL.md      (--scope user -> <home>/.claude/skills)
+ *   kiro       -> <home>/.kiro/skills/<name>/SKILL.md          (--scope workspace -> <target>/.kiro/skills)
+ *   kiro-crew  -> <home>/.kiro/crew/skills/<name>/SKILL.md
+ *   codex      -> <target>/AGENTS.md + <target>/.fintech-compliance-skills/skills/
  *
- * Design guarantees (see the repo's analysis / roadmap):
- *   - Every rule file an installed skill references actually exists at the
- *     installed location (relative links are rewritten for the flat layout;
- *     Codex gets the whole tree copied so `skills/...` paths resolve).
- *   - YAML frontmatter is emitted with a safe (double-quoted, escaped) scalar,
- *     so every generated SKILL.md parses.
- *   - Re-running is idempotent: the Codex AGENTS.md block is delimited by
- *     markers and replaced in place, never appended twice.
- *   - A SKILL.md the user has edited since we wrote it is NOT overwritten
- *     unless --force is passed; the conflict is reported.
+ * Guarantees:
+ *   - Referenced rule files always exist at the installed location
+ *     (cross-links rewritten for the flat layout, anchors preserved; Codex gets the tree copied).
+ *   - YAML frontmatter is emitted as safe double-quoted scalars (always parses).
+ *   - Re-running is idempotent (content hash; Codex uses a marker-delimited block + manifest).
+ *   - A file edited by the user is preserved (skipped) unless --force.
+ *   - An UNEDITED file from EITHER previous installer is recognised by a byte-exact full-file
+ *     hash (captured from git history), then migrated to the new format with a .bak backup.
+ *     Any user edit changes the hash and is preserved, never overwritten.
+ *   - Writes are staged in a temp dir and moved into place; a failed write (including the
+ *     final AGENTS.md write) rolls back to the previous working install.
  *
- * Zero runtime dependencies — only Node.js built-ins, so `npx` just works.
+ * Manifest contract (Codex): keys are tree-relative POSIX paths INCLUDING the leading
+ * `skills/` segment, e.g. "skills/core/secure-fintech-coding.md". Both the writer
+ * (copyTree) and the reader (carry-over walk) use this one convention; a legacy
+ * manifest without the prefix is normalised on read.
+ *
+ * Zero runtime dependencies — Node built-ins only.
  */
 
 'use strict';
@@ -34,7 +41,14 @@ const SKILLS_DIR = path.join(REPO_ROOT, 'skills');
 
 const BLOCK_START = '<!-- BEGIN fintech-compliance-skills (managed; do not edit inside) -->';
 const BLOCK_END = '<!-- END fintech-compliance-skills -->';
-const STAMP = '<!-- fcs-managed-hash:'; // written as an HTML comment at the end of each generated SKILL.md
+const STAMP_RE = /\n\n<!-- fcs-managed-hash:([0-9a-f]+) -->\n?$/;
+const stampFor = (content) => `\n\n<!-- fcs-managed-hash:${sha(content)} -->\n`;
+// The old installer's one-time marker between appended Codex sections.
+const LEGACY_CODEX_MARKER = '<!-- fintech-compliance-skills -->';
+// The generated heading both old Codex outputs start their block with.
+const LEGACY_CODEX_HEADING = '# AGENTS.md — Fintech Compliance Rules';
+const CODEX_ROOT = '.fintech-compliance-skills';
+const CODEX_MANIFEST = '.fcs-manifest.json';
 
 // ---------- discovery ----------
 
@@ -42,15 +56,10 @@ function listSkillFiles() {
   const out = [];
   for (const group of fs.readdirSync(SKILLS_DIR)) {
     const groupPath = path.join(SKILLS_DIR, group);
-    if (!fs.statSync(groupPath).isDirectory()) continue; // skip INDEX.md
+    if (!fs.statSync(groupPath).isDirectory()) continue;
     for (const file of fs.readdirSync(groupPath)) {
       if (!file.endsWith('.md')) continue;
-      out.push({
-        group,                            // core | refusal | global | regional | languages | databases
-        file,                             // java.md
-        name: file.replace(/\.md$/, ''),  // java
-        abs: path.join(groupPath, file),
-      });
+      out.push({ group, file, name: file.replace(/\.md$/, ''), abs: path.join(groupPath, file) });
     }
   }
   return out;
@@ -80,122 +89,224 @@ function triggersFor(skill) {
 
 // ---------- YAML-safe emit ----------
 
-// JSON double-quoted strings are valid YAML double-quoted scalars, so a colon,
-// quote, or backslash inside the description can no longer break the parse.
-function yamlScalar(s) {
-  return JSON.stringify(String(s));
-}
+function yamlScalar(s) { return JSON.stringify(String(s)); }
 
 function frontmatter(name, description, triggers) {
   const d = description.length > 300 ? description.slice(0, 297) + '…' : description;
-  return [
-    '---',
-    `name: ${yamlScalar(name)}`,
-    `description: ${yamlScalar(d)}`,
-    `triggers: ${yamlScalar(triggers)}`,
-    '---',
-    '',
-    '',
-  ].join('\n');
+  return ['---', `name: ${yamlScalar(name)}`, `description: ${yamlScalar(d)}`,
+    `triggers: ${yamlScalar(triggers)}`, '---', '', ''].join('\n');
 }
 
-// In the flat <name>/SKILL.md layout, a sibling skill X lives at ../X/SKILL.md.
-// Rewrite the repo's ../group/file.md links to that shape so they resolve.
+// Flat <name>/SKILL.md layout: sibling skill X is at ../X/SKILL.md.
+// F07: preserve #anchors; only rewrite the .md path, never external URLs or inline/fenced code.
 function rewriteRelativeLinks(body) {
-  return body.replace(
-    /\]\(\.\.\/[a-z0-9-]+\/([a-z0-9-]+)\.md\)/gi,
-    (_m, fileBase) => `](../${fileBase}/SKILL.md)`
-  );
+  const parts = body.split(/(```[\s\S]*?```|`[^`\n]*`)/g);
+  const rewriteSeg = (seg) => seg
+    // [text](../group/file.md#anchor) -> [text](../file/SKILL.md#anchor)
+    .replace(/\]\(\.\.\/[a-z0-9-]+\/([a-z0-9-]+)\.md(#[^)]*)?\)/gi, (_m, f, anchor) => `](../${f}/SKILL.md${anchor || ''})`)
+    // [text](./file.md#anchor) -> [text](../file/SKILL.md#anchor)
+    .replace(/\]\(\.\/([a-z0-9-]+)\.md(#[^)]*)?\)/gi, (_m, f, anchor) => `](../${f}/SKILL.md${anchor || ''})`);
+  return parts.map((p, i) => (i % 2 === 0 ? rewriteSeg(p) : p)).join('');
+}
+
+// The managed (new-format) body for a skill, without the trailing hash stamp.
+function managedContent(skill) {
+  const { desc, body } = parseSkill(skill.abs);
+  return frontmatter(skill.name, desc, triggersFor(skill)) + rewriteRelativeLinks(body);
+}
+
+// ---------- LEGACY output recognition (for migration) ----------
+// We recognise an UNEDITED file written by a previous installer by hashing the whole file
+// and matching a fixed table of byte-exact hashes captured by running the REAL old
+// installers from git history (see installer/fixtures/FIXTURES.json):
+//   pr5 = b742e893  (unescaped frontmatter, no link rewrite, NO stamp)
+//   pr6 = 19b4f33    (quoted frontmatter, link rewrite, WITH stamp — also matched by the stamp branch)
+// Matching the FULL FILE (not just the frontmatter) is what distinguishes an unedited old
+// install (migrate, F04) from a file the user edited (preserve, F04b): any edit changes the hash.
+// Generated from OLD code, never from the current installer.
+const LEGACY_FILE_HASHES = {
+  'aml-kyc': ['d81cfba57dc297dd', '82731709efe1023e'],
+  'cobol': ['6d19a30df3460d53', 'e642b9f6fddddcd1'],
+  'csharp-dotnet': ['996bf667ab0c8fe5', 'aa72183f577750b2'],
+  'db2': ['946ceb1edfdfa625', '2901f1d970e175b1'],
+  'eu-gdpr-psd2-dora': ['04e47c00c60dd0c8', '2bbd20ff647ead55'],
+  'go': ['880cc47652d80d60', '4e9a9263163bb19e'],
+  'iso27001-soc2': ['ec848221e0f84301', 'a6adaefc92763e01'],
+  'java': ['15ad79abcddbe36a', 'b25bc40bd81a92dc'],
+  'javascript-typescript': ['da73e45ebfb30d53', '79dbb32ec2db34bd'],
+  'kotlin': ['a26f0f47c462fd48', 'e8034fa02f396261'],
+  'mongodb': ['0336f87f7c1670f8', '6d91a556a3993ed5'],
+  'mysql-mariadb': ['fda2f37f1bb0cb59', 'fdf2c2f2e6912d49'],
+  'oracle': ['867f7f78d0763eeb', '7b71f3351d5405a7'],
+  'pci-dss': ['52d0afebc7549deb', 'aaa274b9e46c2f09'],
+  'plsql': ['ce4672a8924ac737', '477febb94c4d3175'],
+  'postgresql': ['ee823899b980a5d7', '4b1da4360e936453'],
+  'python': ['fe63e0a932246a16', 'c8aa0d658ea353b1'],
+  'redis': ['d821af09a58ddabc', '18f00fd8f3a040ab'],
+  'refusal-policy': ['eadfc78287c6f460', '2a9b5b07bbe3bd86'],
+  'rust': ['778f4af3aa48681e', 'ce1cb1ac9bdd2fff'],
+  'scala': ['b18862e2f0ad5450', '8095200f4b149f97'],
+  'secure-fintech-coding': ['db160b93a861ac39', '3dfbfe78c117b9ae'],
+  'sql-server': ['634e7da39fd97e4d', '69093bb470776a69'],
+  'turkey-kvkk-bddk-masak': ['13728ee32d3af663', '2b25899da9f95184'],
+  'uk-fca-gdpr': ['d3c9492f911e5cbe', 'c43de2e50d64fb4e'],
+  'us-sox-glba-ccpa': ['81e3a61652aa47e2', '8cfba7434d3b8314'],
+};
+
+// Is `fileText` a byte-exact, UNEDITED file from a previous installer for this skill?
+function isLegacyOutput(skill, fileText) {
+  const known = LEGACY_FILE_HASHES[skill.name];
+  return !!known && known.includes(sha(fileText));
+}
+
+// Codex rule files are RAW skill bodies copied verbatim (no frontmatter) under
+// .fintech-compliance-skills/skills/. The previous installer (19b4f33) copied them but
+// wrote NO manifest, so a manifest-less file must be recognised another way. Table of
+// byte-exact raw-file hashes captured from the real old Codex installs (b742e893 +
+// 19b4f33), keyed by tree-relative path. Generated from OLD code, never current code.
+const CODEX_LEGACY_FILE_HASHES = {
+  'skills/INDEX.md': ['389913d564e7e325'],
+  'skills/core/secure-fintech-coding.md': ['55543a68d2a8288d'],
+  'skills/databases/db2.md': ['b5cccf679f263119'],
+  'skills/databases/mongodb.md': ['6c74671527fd22b9'],
+  'skills/databases/mysql-mariadb.md': ['47867f38d1a51119'],
+  'skills/databases/oracle.md': ['0bb4da72f41907cb'],
+  'skills/databases/postgresql.md': ['13c0a2f6cfa22089'],
+  'skills/databases/redis.md': ['c309bb9595bc53a3'],
+  'skills/databases/sql-server.md': ['d98b84cfbed526bf'],
+  'skills/global/aml-kyc.md': ['63e93c68b75fc64d'],
+  'skills/global/iso27001-soc2.md': ['903cac0a74048c59'],
+  'skills/global/pci-dss.md': ['1a6e08140472dfa9'],
+  'skills/languages/cobol.md': ['631b88b471eec7ad'],
+  'skills/languages/csharp-dotnet.md': ['8c728b9a89a4fffa'],
+  'skills/languages/go.md': ['98154188165b14de'],
+  'skills/languages/java.md': ['a50417b9090b6464'],
+  'skills/languages/javascript-typescript.md': ['dc56406a2c1c6cc4'],
+  'skills/languages/kotlin.md': ['c1fc1de8cb184150'],
+  'skills/languages/plsql.md': ['6c97c6479062a0f3'],
+  'skills/languages/python.md': ['191ce475af82862d'],
+  'skills/languages/rust.md': ['1bbfc85696994e58'],
+  'skills/languages/scala.md': ['2177f25495886f05'],
+  'skills/refusal/refusal-policy.md': ['4ce321e33a98c874'],
+  'skills/regional/eu-gdpr-psd2-dora.md': ['b29d798cad525c86'],
+  'skills/regional/turkey-kvkk-bddk-masak.md': ['23a656efcd167760'],
+  'skills/regional/uk-fca-gdpr.md': ['bf49e9ded74a76bd'],
+  'skills/regional/us-sox-glba-ccpa.md': ['633e8f0e61a2a655'],
+};
+// Is this on-disk Codex rule file an UNEDITED copy from a previous installer?
+function isLegacyCodexFile(relKey, fileText) {
+  const known = CODEX_LEGACY_FILE_HASHES[relKey];
+  return !!known && known.includes(sha(fileText));
 }
 
 // ---------- fs helpers ----------
 
-function expandHome(p) {
-  if (p === '~' || p.startsWith('~/') || p.startsWith('~\\')) {
-    return path.join(os.homedir(), p.slice(1));
-  }
+function expandHome(p, home) {
+  if (p === '~' || p.startsWith('~/') || p.startsWith('~\\')) return path.join(home, p.slice(1));
   return p;
 }
 function mkdirp(dir) { fs.mkdirSync(dir, { recursive: true }); }
 function sha(s) { return crypto.createHash('sha256').update(s, 'utf8').digest('hex').slice(0, 16); }
+function readIf(p) { return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null; }
+// A staging/backup sibling name that will not collide with a real user file.
+function scratchName(base, suffix) { return `${base}.fcs-${suffix}-${process.pid}-${Date.now().toString(36)}`; }
 
-// ---------- SKILL.md installer (Claude + Kiro) ----------
+// ---------- path resolver (testable: home + target injected) ----------
 
-// Returns { installed, skipped: [names] }.
-function installSkillDir(baseDir, skills, force) {
-  let installed = 0;
-  const skipped = [];
+function resolveBase(tool, scope, target, home) {
+  switch (tool) {
+    case 'claude':
+      return scope === 'user' ? path.join(home, '.claude', 'skills') : path.join(target, '.claude', 'skills');
+    case 'kiro':
+      return scope === 'workspace' ? path.join(target, '.kiro', 'skills') : path.join(home, '.kiro', 'skills');
+    case 'kiro-crew':
+      return path.join(home, '.kiro', 'crew', 'skills');
+    default:
+      return null;
+  }
+}
+
+// ---------- SKILL.md installer (Claude / Kiro / Kiro-Crew) ----------
+// classify(dest, skill) -> 'absent' | 'current' | 'ours-stale' | 'legacy' | 'user'
+function classify(dest, skill) {
+  const prev = readIf(dest);
+  if (prev == null) return 'absent';
+  const m = prev.match(STAMP_RE);
+  if (m) {
+    const bodyNow = prev.replace(STAMP_RE, '');
+    if (sha(bodyNow) !== m[1]) return 'user';            // our stamp but body changed by user
+    return bodyNow === managedContent(skill) ? 'current' : 'ours-stale';
+  }
+  // No stamp: migrate ONLY a byte-exact, UNEDITED file from a previous installer.
+  // Any user edit changes the hash and falls through to 'user' (preserved). (F04 / F04b)
+  return isLegacyOutput(skill, prev) ? 'legacy' : 'user';
+}
+
+function installSkillDir(baseDir, skills, { force }) {
+  const res = { installed: 0, migrated: [], skipped: [], unchanged: 0, backups: [] };
+  // Stage classification first, then commit, so a mid-run failure leaves the old install intact.
+  const staged = [];
   for (const s of skills) {
-    const { desc, body } = parseSkill(s.abs);
-    const front = frontmatter(s.name, desc, triggersFor(s));
-    const content = front + rewriteRelativeLinks(body);
-    const managed = content + `\n\n${STAMP}${sha(content)} -->\n`;
     const dir = path.join(baseDir, s.name);
     const dest = path.join(dir, 'SKILL.md');
-
-    if (fs.existsSync(dest) && !force) {
-      const prev = fs.readFileSync(dest, 'utf8');
-      const m = prev.match(/\n\n<!-- fcs-managed-hash:([0-9a-f]+) -->\n?$/);
-      // Strip exactly the separator + stamp we appended, leaving content untouched.
-      const prevBody = prev.replace(/\n\n<!-- fcs-managed-hash:[0-9a-f]+ -->\n?$/, '');
-      // If it has our stamp and the stamp still matches its body, it is unchanged by the user.
-      const userEdited = !m || sha(prevBody) !== m[1];
-      if (userEdited) {
-        skipped.push(s.name);
-        continue;
-      }
-      if (prevBody === content) { installed++; continue; } // already current, no-op
-    }
-    mkdirp(dir);
-    fs.writeFileSync(dest, managed, 'utf8');
-    installed++;
+    const cls = force ? 'absent' : classify(dest, s);
+    if (cls === 'current') { res.unchanged++; continue; }
+    if (cls === 'user') { res.skipped.push(s.name); continue; }
+    const content = managedContent(s);
+    staged.push({ dir, dest, data: content + stampFor(content), migrate: cls === 'legacy', name: s.name });
   }
-  return { installed, skipped };
+  // commit
+  for (const st of staged) {
+    mkdirp(st.dir);
+    if (st.migrate && fs.existsSync(st.dest)) {
+      const bak = st.dest + '.bak';
+      if (!fs.existsSync(bak)) fs.copyFileSync(st.dest, bak); // never overwrite an existing user backup
+      res.backups.push(bak);
+    }
+    const tmp = st.dest + '.tmp';
+    fs.writeFileSync(tmp, st.data, 'utf8');
+    fs.renameSync(tmp, st.dest);          // atomic replace on same volume
+    if (st.migrate) res.migrated.push(st.name); else res.installed++;
+  }
+  return res;
 }
 
 // ---------- Codex installer ----------
-
-// Copy the whole skills/ tree so every `skills/<group>/<file>.md` path in the
-// AGENTS.md block resolves, then write/replace a single managed block.
-function copyTree(src, dst) {
-  mkdirp(dst);
-  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
-    const s = path.join(src, entry.name);
-    const d = path.join(dst, entry.name);
-    if (entry.isDirectory()) copyTree(s, d);
-    else fs.copyFileSync(s, d);
-  }
+// Manifest keys are tree-relative INCLUDING the leading `skills/` segment.
+function copyTree(srcRoot, dstRoot, manifest) {
+  const walk = (src, dst, rel) => {
+    mkdirp(dst);
+    for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+      const s = path.join(src, entry.name);
+      const d = path.join(dst, entry.name);
+      const r = rel ? `${rel}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(s, d, r);
+      else { const data = fs.readFileSync(s); fs.writeFileSync(d, data); manifest[r] = sha(data.toString('utf8')); }
+    }
+  };
+  walk(srcRoot, dstRoot, 'skills'); // keys become skills/<group>/<file>
 }
 
 function buildCodexBlock(skills, relRoot) {
   const byGroup = {};
   for (const s of skills) (byGroup[s.group] = byGroup[s.group] || []).push(s);
   const p = (g, f) => `${relRoot}/skills/${g}/${f}`;
-  let md = `${BLOCK_START}\n`;
-  md += `# Fintech Compliance Rules\n\n`;
+  let md = `${BLOCK_START}\n# Fintech Compliance Rules\n\n`;
   md += `You write code for regulated financial systems. Before writing or changing\n`;
   md += `any code that touches money, payments, accounts, balances, or personal /\n`;
   md += `financial data, load and obey the relevant rule files below. **Always** obey\n`;
   md += `\`${p('core', 'secure-fintech-coding.md')}\` and \`${p('refusal', 'refusal-policy.md')}\`.\n`;
   md += `If a request would break a red line, refuse and name the rule — do not write\n`;
-  md += `the non-compliant code.\n\n`;
-  md += `## Always load\n\n`;
+  md += `the non-compliant code.\n\n## Always load\n\n`;
   md += `- \`${p('core', 'secure-fintech-coding.md')}\` — baseline for all financial code\n`;
   md += `- \`${p('refusal', 'refusal-policy.md')}\` — hard limits / when to say no\n\n`;
   const order = ['global', 'regional', 'languages', 'databases'];
-  const titleFor = {
-    global: 'Load for the framework in scope',
-    regional: "Load for the user's jurisdiction",
-    languages: 'Load the one you are coding in',
-    databases: 'Load the one you store in',
-  };
+  const titleFor = { global: 'Load for the framework in scope', regional: "Load for the user's jurisdiction",
+    languages: 'Load the one you are coding in', databases: 'Load the one you store in' };
   for (const g of order) {
     if (!byGroup[g]) continue;
     md += `## ${g[0].toUpperCase() + g.slice(1)} — ${titleFor[g]}\n\n`;
-    for (const s of byGroup[g]) {
-      const { desc } = parseSkill(s.abs);
-      md += `- \`${p(g, s.file)}\` — ${desc}\n`;
-    }
+    for (const s of byGroup[g]) md += `- \`${p(g, s.file)}\` — ${parseSkill(s.abs).desc}\n`;
     md += `\n`;
   }
   md += `> These rule files were installed next to this AGENTS.md under \`${relRoot}/\`.\n`;
@@ -204,33 +315,232 @@ function buildCodexBlock(skills, relRoot) {
   return md;
 }
 
-function installCodex(targetDir, skills) {
-  mkdirp(targetDir);
-  const rootName = '.fintech-compliance-skills';
-  const treeDst = path.join(targetDir, rootName);
-  // refresh the copied tree
-  fs.rmSync(treeDst, { recursive: true, force: true });
-  copyTree(SKILLS_DIR, path.join(treeDst, 'skills'));
+function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
-  const block = buildCodexBlock(skills, rootName);
-  const dest = path.join(targetDir, 'AGENTS.md');
+// The fixed closing line of the OLD generated Codex block (both historical variants end
+// their blockquote note with this phrase). The generated section is heading -> ... ->
+// the LAST line of the closing blockquote run that contains this phrase. User prose that
+// merely mentions `skills/...` sits OUTSIDE that run and is preserved (G2).
+const LEGACY_CODEX_CLOSING = 'follow its Do / Never / examples';
 
-  if (fs.existsSync(dest)) {
-    let existing = fs.readFileSync(dest, 'utf8');
-    const re = new RegExp(`${escapeRe(BLOCK_START)}[\\s\\S]*?${escapeRe(BLOCK_END)}`);
-    if (re.test(existing)) {
-      existing = existing.replace(re, block);                 // replace managed block in place
-    } else {
-      existing = existing.replace(/\s*$/, '') + `\n\n${block}\n`; // append once
+// Replace our managed block; also strip any legacy appended sections so old broken
+// skills/... references do not linger. Preserves ALL user text outside those regions.
+//
+// G2: a legacy generated section is bounded by its KNOWN STRUCTURE — the generated heading,
+// then everything through the closing blockquote note (`> ... follow its Do / Never /
+// examples ...`). We do NOT guess the end from "the last line that mentions skills/",
+// because user instructions legitimately reference skills/ paths too. If a heading is found
+// but no closing blockquote note follows it (shape we don't recognise), we DO NOT delete to
+// EOF — we leave that heading in place and report it, rather than destroying user text.
+function mergeCodexBlock(existing, block) {
+  let out = existing;
+  let ambiguous = false;
+
+  // 1. Remove every one of OUR managed blocks (handles duplicates) — these are marker-delimited.
+  const managedRe = new RegExp(`\\n*${escapeRe(BLOCK_START)}[\\s\\S]*?${escapeRe(BLOCK_END)}\\n*`, 'g');
+  out = out.replace(managedRe, '\n');
+
+  // 2. Remove every LEGACY (marker-less) generated section by its structural boundary.
+  const lines = out.split('\n');
+  const kept = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    let headingIdx = -1;
+    if (line.startsWith(LEGACY_CODEX_HEADING)) {
+      headingIdx = i;
+    } else if (line.trim() === LEGACY_CODEX_MARKER) {
+      let j = i + 1; while (j < lines.length && lines[j].trim() === '') j++;
+      if (j < lines.length && lines[j].startsWith(LEGACY_CODEX_HEADING)) headingIdx = j;
     }
-    fs.writeFileSync(dest, existing, 'utf8');
-  } else {
-    fs.writeFileSync(dest, block + '\n', 'utf8');
+    if (headingIdx === -1) { kept.push(line); continue; }
+
+    // Find the end: the closing blockquote run that contains LEGACY_CODEX_CLOSING, bounded
+    // by the next legacy heading (defensive) so one section cannot swallow the next.
+    let closeIdx = -1;
+    for (let j = headingIdx + 1; j < lines.length; j++) {
+      const t = lines[j];
+      if (t.startsWith(LEGACY_CODEX_HEADING)) break;
+      if (t.trim() === LEGACY_CODEX_MARKER) {
+        let k = j + 1; while (k < lines.length && lines[k].trim() === '') k++;
+        if (k < lines.length && lines[k].startsWith(LEGACY_CODEX_HEADING)) break;
+      }
+      if (t.startsWith('>') && t.includes(LEGACY_CODEX_CLOSING)) {
+        closeIdx = j;
+        // extend across any further contiguous blockquote lines (the note is 1-2 lines)
+        while (closeIdx + 1 < lines.length && lines[closeIdx + 1].startsWith('>')) closeIdx++;
+        break;
+      }
+    }
+    if (closeIdx === -1) {
+      // Unrecognised shape: do NOT delete to EOF. Keep the line verbatim and flag ambiguity.
+      ambiguous = true;
+      kept.push(line);
+      continue;
+    }
+    i = closeIdx; // drop [heading-or-marker .. closeIdx]; outer ++ resumes after it (user text)
   }
-  return treeDst;
+
+  out = kept.join('\n').replace(/\s*$/, '');
+  out = (out ? out + '\n\n' : '') + `${block}\n`;
+  out = out.replace(/\n{3,}/g, '\n\n');
+  return ambiguous ? { text: out, ambiguous: true } : out;
 }
 
-function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function installCodex(targetDir, skills, { force }) {
+  mkdirp(targetDir);
+  const treeDst = path.join(targetDir, CODEX_ROOT);
+  const skillsDst = path.join(treeDst, 'skills');
+  const manifestPath = path.join(treeDst, CODEX_MANIFEST);
+
+  // Manifest schema v2: { version:2, managed:{relKey:hash}, userEdited:{relKey:hash} }.
+  // `managed` = hash of the package baseline we last wrote. `userEdited` = hash of a file
+  // the user changed, which we are preserving (G1: an edit is NEVER recorded as a managed
+  // baseline, or the next run would think it is unchanged package content and overwrite it).
+  // Tolerate every older shape: a flat {relKey:hash} map, and prefix-less keys (`core/x.md`).
+  const rawPrev = (() => { try { return JSON.parse(readIf(manifestPath) || '{}'); } catch { return {}; } })();
+  const prevManaged = {};
+  const prevUserEdited = {};
+  const normKey = (k) => (k.startsWith('skills/') ? k
+    : /^(core|refusal|global|regional|languages|databases)\//.test(k) ? `skills/${k}`
+    : k === 'INDEX.md' ? 'skills/INDEX.md' : k);
+  if (rawPrev && typeof rawPrev === 'object' && rawPrev.version >= 2) {
+    for (const [k, v] of Object.entries(rawPrev.managed || {})) prevManaged[normKey(k)] = v;
+    for (const [k, v] of Object.entries(rawPrev.userEdited || {})) prevUserEdited[normKey(k)] = v;
+  } else {
+    // legacy flat map: treat every entry as a managed baseline
+    for (const [k, v] of Object.entries(rawPrev || {})) {
+      if (typeof v === 'string') prevManaged[normKey(k)] = v;
+    }
+  }
+
+  // Stage the new tree in a uniquely-named temp dir; validate; then swap. Preserve unknown + edited files.
+  const stage = scratchName(treeDst, 'stage');
+  fs.rmSync(stage, { recursive: true, force: true });
+  const managed = {};       // relKey -> hash of the package baseline we are writing now
+  const userEdited = {};     // relKey -> hash of a preserved user edit
+  let backup = null;
+  let agentsTmp = null;
+  let rollbackFailed = false;
+  try {
+    copyTree(SKILLS_DIR, path.join(stage, 'skills'), managed);
+    const skipped = [];
+    if (fs.existsSync(treeDst)) {
+      const walkPrev = (dir, rel) => {
+        for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+          const abs = path.join(dir, e.name);
+          const r = rel ? `${rel}/${e.name}` : e.name;
+          if (r === CODEX_MANIFEST) continue;
+          if (e.isDirectory()) { walkPrev(abs, r); continue; }
+          const relKey = r; // tree-relative, includes leading skills/ for rule files
+          const cur = sha(fs.readFileSync(abs, 'utf8'));
+          const pkgNow = managed[relKey]; // hash of the fresh package file for this path (if any)
+          const preserveTo = () => { const d = path.join(stage, r); mkdirp(path.dirname(d)); fs.copyFileSync(abs, d); };
+
+          if (pkgNow === undefined) {
+            // not a package path at all -> unknown user file -> always preserve (even under --force)
+            preserveTo();
+            continue;
+          }
+          if (force) {
+            // explicit overwrite: the fresh package copy already staged wins; nothing to carry.
+            continue;
+          }
+          const wasManaged = Object.prototype.hasOwnProperty.call(prevManaged, relKey);
+          const wasUserEdited = Object.prototype.hasOwnProperty.call(prevUserEdited, relKey);
+          if (cur === pkgNow) {
+            continue; // already equals the new package content -> staged copy wins, no-op
+          }
+          if (wasManaged && cur === prevManaged[relKey]) {
+            continue; // unchanged managed file from a prior run -> upgrade to new package (staged wins)
+          }
+          if (!wasManaged && !wasUserEdited && isLegacyCodexFile(relKey, fs.readFileSync(abs, 'utf8'))) {
+            continue; // G3: unedited file from a manifest-less OLD install -> upgrade to new package
+          }
+          if (wasUserEdited && cur === prevUserEdited[relKey]) {
+            // G1: still the same user edit we preserved before -> keep preserving, re-record as userEdited
+            preserveTo(); userEdited[relKey] = cur; skipped.push(relKey);
+            continue;
+          }
+          // genuine user edit (differs from package, from the managed baseline, and is not a known legacy file)
+          preserveTo(); userEdited[relKey] = cur; skipped.push(relKey);
+        }
+      };
+      walkPrev(treeDst, '');
+    }
+    // staged `managed` still holds hashes for files that ended up preserved as user edits;
+    // move those out of managed so the schema is accurate.
+    for (const k of Object.keys(userEdited)) delete managed[k];
+    const manifestOut = { version: 2, managed, userEdited };
+    fs.writeFileSync(path.join(stage, CODEX_MANIFEST), JSON.stringify(manifestOut, null, 2), 'utf8');
+
+    // AGENTS.md merge (compute before swapping so a failure here leaves the tree untouched).
+    const block = buildCodexBlock(skills, CODEX_ROOT);
+    const dest = path.join(targetDir, 'AGENTS.md');
+    const existing = readIf(dest);
+    let agentsOut, agentsAmbiguous = false;
+    if (existing == null) {
+      agentsOut = block + '\n';
+    } else {
+      const merged = mergeCodexBlock(existing, block);
+      if (typeof merged === 'string') { agentsOut = merged; }
+      else { agentsOut = merged.text; agentsAmbiguous = merged.ambiguous; } // G2: unrecognised legacy shape left in place
+    }
+
+    // Back up an existing AGENTS.md (never overwrite a prior backup).
+    if (existing != null) {
+      const agentsBak = dest + '.bak';
+      if (!fs.existsSync(agentsBak)) fs.writeFileSync(agentsBak, existing, 'utf8');
+    }
+
+    // G4: stage AGENTS.md to a unique temp file on the SAME directory, then atomically rename.
+    // A crash mid-write hits only the temp file; the active AGENTS.md is never truncated in place.
+    agentsTmp = scratchName(dest, 'tmp');
+    fs.writeFileSync(agentsTmp, agentsOut, 'utf8');
+
+    // commit: swap tree, then rename AGENTS.md into place. Keep the tree backup until BOTH
+    // the tree swap AND the AGENTS.md rename succeed (F03), so any failure rolls back cleanly.
+    if (fs.existsSync(treeDst)) {
+      backup = scratchName(treeDst, 'old');
+      fs.rmSync(backup, { recursive: true, force: true });
+      fs.renameSync(treeDst, backup);
+    }
+    try {
+      fs.renameSync(stage, treeDst);
+      fs.renameSync(agentsTmp, dest); // atomic replace on the same volume; no partial active file
+      agentsTmp = null;               // consumed
+    } catch (e) {
+      try { if (agentsTmp) { fs.rmSync(agentsTmp, { force: true }); agentsTmp = null; } } catch { /* best effort */ }
+      fs.rmSync(treeDst, { recursive: true, force: true });
+      if (backup && fs.existsSync(backup)) {
+        try {
+          fs.renameSync(backup, treeDst); // rollback tree
+          backup = null;
+        } catch (rollbackErr) {
+          // G4-E: rollback itself failed. DO NOT delete the backup — it is the only recovery
+          // data left. Leave it on disk and surface a clear error naming where it is.
+          rollbackFailed = true;
+          const err = new Error(`${e.message}; rollback also failed (${rollbackErr.message}); recovery copy kept at ${backup}`);
+          throw err;
+        }
+      }
+      throw e;
+    }
+    if (backup) { fs.rmSync(backup, { recursive: true, force: true }); backup = null; }
+    return { where: skillsDst, skipped, ambiguous: agentsAmbiguous };
+  } finally {
+    fs.rmSync(stage, { recursive: true, force: true });
+    if (agentsTmp) { try { fs.rmSync(agentsTmp, { force: true }); } catch { /* best effort */ } }
+    if (backup && !rollbackFailed) fs.rmSync(backup, { recursive: true, force: true });
+  }
+}
+
+// ---------- inventory checks ----------
+function assertInventory(baseDir, skills) {
+  return skills.filter((s) => !fs.existsSync(path.join(baseDir, s.name, 'SKILL.md'))).map((s) => s.name);
+}
+function assertCodexInventory(skillsRoot, skills) {
+  return skills.filter((s) => !fs.existsSync(path.join(skillsRoot, s.group, s.file))).map((s) => `${s.group}/${s.file}`);
+}
 
 // ---------- CLI ----------
 
@@ -244,59 +554,89 @@ async function main() {
   if (has('--help') || has('-h')) {
     console.log(`fintech-compliance-skills
 
-Usage: npx fintech-compliance-skills [--tool claude|kiro|codex] [--target <dir>] [--force]
+Usage: npx fintech-compliance-skills [--tool TOOL] [--target DIR] [--scope SCOPE] [--home DIR] [--force]
 
-  --tool     claude | kiro | codex   (prompted if omitted)
-  --target   project dir for claude/codex (default: current dir; kiro ignores it)
-  --force    overwrite SKILL.md files even if edited since install
-  --help     show this help`);
+  --tool    claude | kiro | kiro-crew | codex   (prompted if omitted)
+  --scope   claude: project (default) | user
+            kiro:   global (default, ~/.kiro/skills) | workspace (.kiro/skills in --target)
+  --target  project dir for project/workspace/codex installs (default: current dir)
+  --home    override home dir (for testing; default: OS home)
+  --force   overwrite SKILL.md / managed files even if edited since install
+  --help    show this help
+
+Targets:
+  claude      <target>/.claude/skills/            (or ~/.claude/skills with --scope user)
+  kiro        ~/.kiro/skills/  (global)            (or <target>/.kiro/skills with --scope workspace)
+  kiro-crew   ~/.kiro/crew/skills/
+  codex       <target>/AGENTS.md + <target>/.fintech-compliance-skills/`);
     return;
   }
 
   let tool = flag('--tool');
   let target = flag('--target');
+  let scope = flag('--scope');
+  const home = flag('--home') ? String(flag('--home')) : os.homedir();
   const force = has('--force');
   const skills = listSkillFiles();
+
+  const KNOWN = ['claude', 'kiro', 'kiro-crew', 'codex'];
+  if (tool && !KNOWN.includes(String(tool))) {
+    console.error(`Unknown --tool "${tool}". Supported: ${KNOWN.join(', ')}.`);
+    process.exit(2);
+  }
+  if (scope && !['project', 'user', 'workspace', 'global'].includes(String(scope))) {
+    console.error(`Unknown --scope "${scope}". Use project|user (claude) or global|workspace (kiro).`);
+    process.exit(2);
+  }
 
   if (!tool) {
     const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
     console.log('\nfintech-compliance-skills — install compliance rules into your AI coding agent.\n');
     console.log('  1) Claude Code   (project .claude/skills/)');
-    console.log('  2) Kiro          (~/.kiro/crew/skills/)');
-    console.log('  3) Codex CLI     (project AGENTS.md + rule files)\n');
-    const choice = await ask(rl, 'Which tool? [1/2/3]: ');
-    tool = { '1': 'claude', '2': 'kiro', '3': 'codex' }[choice] || 'claude';
-    if (tool !== 'kiro') {
+    console.log('  2) Kiro CLI/IDE  (~/.kiro/skills/)');
+    console.log('  3) Kiro Crew     (~/.kiro/crew/skills/)');
+    console.log('  4) Codex CLI     (project AGENTS.md + rule files)\n');
+    const choice = await ask(rl, 'Which tool? [1/2/3/4]: ');
+    tool = { '1': 'claude', '2': 'kiro', '3': 'kiro-crew', '4': 'codex' }[choice] || 'claude';
+    if (tool === 'claude' || tool === 'codex') {
       const t = await ask(rl, `Target project directory [${process.cwd()}]: `);
       target = t || process.cwd();
     }
     rl.close();
   }
 
-  target = target ? expandHome(String(target)) : process.cwd();
+  target = target ? expandHome(String(target), home) : process.cwd();
+  scope = scope ? String(scope) : undefined;
 
-  if (tool === 'claude' || tool === 'kiro') {
-    const base = tool === 'claude'
-      ? path.join(target, '.claude', 'skills')
-      : path.join(os.homedir(), '.kiro', 'crew', 'skills');
-    mkdirp(base);
-    const { installed, skipped } = installSkillDir(base, skills, force);
-    console.log(`\n✅ ${tool}: installed ${installed} skill(s) -> ${base}`);
-    if (skipped.length) {
-      console.log(`⚠️  skipped ${skipped.length} edited file(s) (use --force to overwrite): ${skipped.join(', ')}`);
-    }
-    console.log(tool === 'claude'
-      ? '   Restart Claude Code (or /reload) to pick up the skills.'
-      : '   Kiro loads skills on the next session.');
-  } else if (tool === 'codex') {
-    const where = installCodex(target, skills);
-    console.log(`\n✅ codex: AGENTS.md updated and rule files installed -> ${where}`);
+  if (tool === 'codex') {
+    const { where, skipped, ambiguous } = installCodex(target, skills, { force });
+    const missing = assertCodexInventory(where, skills);
+    console.log(`\n✅ codex: AGENTS.md updated and ${skills.length} rule files installed -> ${where}`);
+    if (skipped.length) console.log(`⚠️  preserved ${skipped.length} edited managed file(s) (use --force): ${skipped.join(', ')}`);
+    if (ambiguous) console.log(`⚠️  conflict: an existing "# AGENTS.md — Fintech Compliance Rules" section did not match a known old format, so it was left in place (not migrated). Review AGENTS.md and remove the stale section by hand if needed.`);
+    if (missing.length) { console.error(`✗ inventory check failed, missing: ${missing.join(', ')}`); process.exit(1); }
     console.log('   Codex reads AGENTS.md automatically at session start.');
   } else {
-    console.error(`Unknown tool: ${tool}. Use claude | kiro | codex.`);
-    process.exit(1);
+    const base = resolveBase(tool, scope, target, home);
+    mkdirp(base);
+    const r = installSkillDir(base, skills, { force });
+    const missing = assertInventory(base, skills);
+    console.log(`\n✅ ${tool}: ${r.installed} new, ${r.migrated.length} migrated, ${r.unchanged} unchanged -> ${base}`);
+    if (r.migrated.length) console.log(`↗  migrated from previous installer: ${r.migrated.join(', ')} (backups: *.bak)`);
+    if (r.skipped.length) console.log(`⚠️  skipped ${r.skipped.length} user-edited file(s) (use --force): ${r.skipped.join(', ')}`);
+    if (missing.length) { console.error(`✗ inventory check failed, missing: ${missing.join(', ')}`); process.exit(1); }
+    console.log(tool === 'claude' ? '   Restart Claude Code (or /reload) to pick up the skills.'
+      : '   Kiro loads skills on the next session.');
   }
   console.log('');
 }
 
-main().catch((e) => { console.error('Install failed:', e.message); process.exit(1); });
+if (require.main === module) {
+  main().catch((e) => { console.error('Install failed:', e.message); process.exit(1); });
+}
+
+module.exports = {
+  resolveBase, classify, isLegacyOutput, isLegacyCodexFile, managedContent, mergeCodexBlock, rewriteRelativeLinks,
+  listSkillFiles, installCodex, installSkillDir, LEGACY_FILE_HASHES,
+  BLOCK_START, BLOCK_END, LEGACY_CODEX_MARKER, LEGACY_CODEX_HEADING, CODEX_ROOT, CODEX_MANIFEST,
+};

@@ -70,8 +70,13 @@ Non-interactive (CI or scripts):
 # Claude Code, into the current project
 npx github:fintechbear/fintech-compliance-skills --tool claude --target .
 
-# Kiro (always installs to ~/.kiro/crew/skills)
+# Kiro CLI / IDE (global skills: ~/.kiro/skills)
 npx github:fintechbear/fintech-compliance-skills --tool kiro
+#   ...or workspace-scoped (.kiro/skills in the project):
+npx github:fintechbear/fintech-compliance-skills --tool kiro --scope workspace --target .
+
+# Kiro Crew (~/.kiro/crew/skills)
+npx github:fintechbear/fintech-compliance-skills --tool kiro-crew
 
 # Codex CLI, into the current project
 npx github:fintechbear/fintech-compliance-skills --tool codex --target .
@@ -81,16 +86,30 @@ npx github:fintechbear/fintech-compliance-skills --tool codex --target .
 
 | Tool | Where it installs | Format |
 |------|-------------------|--------|
-| **Claude Code** | `<project>/.claude/skills/<name>/SKILL.md` | one folder per skill, with YAML frontmatter |
-| **Kiro** | `~/.kiro/crew/skills/<name>/SKILL.md` | one folder per skill, with YAML frontmatter |
+| **Claude Code** | `<project>/.claude/skills/<name>/SKILL.md` (`--scope user` → `~/.claude/skills`) | one folder per skill, with YAML frontmatter |
+| **Kiro CLI / IDE** | `~/.kiro/skills/<name>/SKILL.md` global (`--scope workspace` → `<project>/.kiro/skills`) | one folder per skill, with YAML frontmatter |
+| **Kiro Crew** | `~/.kiro/crew/skills/<name>/SKILL.md` | one folder per skill, with YAML frontmatter |
 | **Codex CLI** | `<project>/AGENTS.md` + `<project>/.fintech-compliance-skills/skills/` | a managed instruction block plus the rule files it points at |
 
-The installer is safe to re-run: it writes a single managed block in `AGENTS.md`
-(replaced in place, never duplicated), rewrites each skill's cross-links so they
-resolve where they land, and **will not overwrite a `SKILL.md` you have edited**
-unless you pass `--force`.
+Kiro CLI/IDE read skills from `.kiro/skills/` (workspace) and `~/.kiro/skills/`
+(global) per the [Kiro docs](https://kiro.dev/docs/skills/); Kiro **Crew** is a
+separate product with its own `~/.kiro/crew/skills/` path, so it is a separate target.
 
-Flags: `--tool claude|kiro|codex`, `--target <dir>`, `--force`, `--help`.
+The installer is safe to re-run and to upgrade an older install:
+
+- **Idempotent** — re-running produces byte-identical output; the Codex `AGENTS.md`
+  keeps a single marker-delimited managed block (never duplicated).
+- **Migration** — files written by the previous installer (no hash stamp) are
+  recognised by reproducing the old output and matching it exactly, then upgraded to
+  the new format with a `.bak` backup. Old Codex sections (including duplicates) are
+  collapsed into the one managed block and their stale `skills/...` links removed.
+- **Never clobbers your edits** — a `SKILL.md` (or managed Codex file) you changed is
+  preserved and skipped unless you pass `--force`. A file we cannot prove is old
+  installer output is treated as your edit.
+- **Atomic** — writes are staged and swapped in; a failed update leaves the previous
+  working install intact.
+
+Flags: `--tool claude|kiro|kiro-crew|codex`, `--scope`, `--target <dir>`, `--home <dir>` (testing), `--force`, `--help`.
 
 After installing: **Claude Code** — restart or `/reload`; **Kiro** — loads on the
 next session; **Codex** — reads `AGENTS.md` automatically at session start.
@@ -109,8 +128,11 @@ hard limits.
 1. You ask the agent to build something (e.g. "save the customer's card on file").
 2. The agent loads the relevant skill(s) — here, `global/pci-dss.md` plus your
    language and database files.
-3. The skill tells it what to **do** (tokenise via the processor, never store the
-   PAN) and what it must **never do** (raw PAN at rest, CVV stored at all).
+3. The skill tells it what to **do** (tokenise via the processor; if the PAN must
+   be stored, render it unreadable — encrypt with managed keys, truncate, keyed-hash
+   or tokenise) and what it must **never do** (readable PAN at rest, and — the hard
+   PCI-DSS line — Sensitive Authentication Data such as CVV / full track / PIN
+   stored after authorization).
 4. If the request crosses a red line, the agent **refuses and explains which rule**
    instead of writing the unsafe code.
 
@@ -152,7 +174,10 @@ Each language and database file covers four things in depth:
 
 The refusal policy makes the agent stop rather than produce code that would:
 
-- store a raw card number (PAN) in plaintext, or store a CVV at all;
+- store a card number (PAN) in **readable** form at rest, or store Sensitive
+  Authentication Data (CVV / full track / PIN) after authorization — storing the
+  PAN is allowed only when rendered unreadable (encryption, truncation, keyed hash,
+  tokenisation); our own stricter policy is to not store the CVV at all;
 - store or log a password in plaintext, or hash one with MD5/SHA-1;
 - write a card number, CVV, password, token or full national ID into a log;
 - use weak or home-rolled crypto (MD5, SHA-1, DES, ECB, hardcoded keys);
