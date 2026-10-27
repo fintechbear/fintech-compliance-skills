@@ -16,14 +16,16 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        node: ['18', '20']
+        # Must cover the minimum declared in package.json engines (>=18) and a current LTS.
+        node: ['18', '20', '22']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      - name: Install dev dependencies
-        run: npm ci || npm install
+      # Lockfile is committed: use `npm ci` and let a mismatch FAIL (no ||install mask).
+      - name: Install dev dependencies (npm ci)
+        run: npm ci
       - name: Structural checks
         run: npm run verify
       - name: Test suite (real YAML, migration, atomicity, packed artifact)

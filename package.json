@@ -7,7 +7,7 @@
   },
   "scripts": {
     "verify": "node installer/verify.js",
-    "test": "node --test --test-force-exit installer/test.js"
+    "test": "node --test installer/test.js"
   },
   "files": [
     "installer/index.js",

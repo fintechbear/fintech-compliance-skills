@@ -4,11 +4,11 @@
  * js-yaml (devDependency) for REAL YAML parsing and a --home/--target sandbox so
  * nothing touches the user's real home.
  *
- * Covers the WP2 matrix: clean installs (claude/codex/kiro/kiro-crew), idempotency,
- * user-edit preservation, --force, migration from the previous installer
- * (unedited + edited), legacy Codex section migration (incl. duplicates), unknown
- * user-file preservation, ./ ../ anchor links, real YAML + negative fixtures,
- * bad CLI args, mid-update failure recovery, and install from the packed npm artifact.
+ * Historical fixtures (installer/fixtures/) were captured by running the REAL old
+ * installers from git history (b742e893 = PR#5, 19b4f33 = PR#6) — see FIXTURES.json.
+ * Tests load them from disk; they are NEVER regenerated from the current code.
+ *
+ * Covers F01-F07 as named regressions plus the broader matrix.
  */
 
 const test = require('node:test');
@@ -21,6 +21,7 @@ const yaml = require('js-yaml');
 
 const INSTALLER = path.resolve(__dirname, 'index.js');
 const REPO_ROOT = path.resolve(__dirname, '..');
+const FIX = path.join(__dirname, 'fixtures');
 const api = require('./index.js');
 
 function tmp() { return fs.mkdtempSync(path.join(os.tmpdir(), 'fcs-t-')); }
@@ -38,8 +39,20 @@ function walkFiles(dir, rel = '', out = []) {
 }
 const sourceSkillNames = api.listSkillFiles().map((s) => s.name);
 
-// 1. clean Claude install
-test('clean Claude install: full inventory + resolvable links + valid YAML', () => {
+// Load a historical claude fixture SKILL.md (exact bytes the old installer wrote).
+function legacyFixture(version, skillName) {
+  const f = path.join(FIX, version, 'claude', `${skillName}.SKILL.md`);
+  return fs.readFileSync(f, 'utf8');
+}
+function haveFixtures() {
+  try { return fs.existsSync(path.join(FIX, 'pr5', 'claude', 'java.SKILL.md')); } catch { return false; }
+}
+
+// ---------------------------------------------------------------------------
+// clean installs
+// ---------------------------------------------------------------------------
+
+test('1. clean Claude install: full inventory + resolvable links (anchors too) + valid YAML', () => {
   const t = tmp();
   run(['--tool', 'claude', '--target', t, '--home', t]);
   const base = path.join(t, '.claude', 'skills');
@@ -48,23 +61,21 @@ test('clean Claude install: full inventory + resolvable links + valid YAML', () 
   for (const name of got) {
     const f = path.join(base, name, 'SKILL.md');
     const txt = fs.readFileSync(f, 'utf8');
-    // real YAML parse of the frontmatter
     assert.ok(txt.startsWith('---'), `${name} has frontmatter`);
     const fm = txt.slice(3, txt.indexOf('\n---', 3));
     const meta = yaml.load(fm);
     assert.equal(typeof meta.name, 'string');
     assert.equal(typeof meta.description, 'string');
-    // every ./ ../ link resolves from the installed location
     for (const m of txt.matchAll(/\]\((\.\.?\/[^)]+)\)/g)) {
-      const target = path.resolve(path.dirname(f), m[1].split('#')[0]);
-      assert.ok(fs.existsSync(target), `${name}: link ${m[1]} resolves`);
+      const [file, anchor] = m[1].split('#');
+      assert.ok(fs.existsSync(path.resolve(path.dirname(f), file)), `${name}: link ${m[1]} file resolves`);
+      if (anchor) assert.ok(/^[a-z0-9-]+$/i.test(anchor), `${name}: anchor ${anchor} preserved`);
     }
   }
   fs.rmSync(t, { recursive: true, force: true });
 });
 
-// 2. clean Codex install: referenced files exist, one managed block
-test('clean Codex install: refs resolve + single managed block', () => {
+test('2. clean Codex install: refs resolve + single managed block', () => {
   const t = tmp();
   run(['--tool', 'codex', '--target', t, '--home', t]);
   const agents = fs.readFileSync(path.join(t, 'AGENTS.md'), 'utf8');
@@ -75,21 +86,21 @@ test('clean Codex install: refs resolve + single managed block', () => {
   fs.rmSync(t, { recursive: true, force: true });
 });
 
-// 3. Kiro targets resolve to the official paths (no real-home writes)
-test('Kiro CLI/IDE + Crew resolve to documented paths', () => {
+test('3. Kiro CLI/IDE + Crew resolve to the official paths (no real-home writes)', () => {
   assert.equal(api.resolveBase('kiro', undefined, '/proj', '/home'), path.join('/home', '.kiro', 'skills'));
   assert.equal(api.resolveBase('kiro', 'workspace', '/proj', '/home'), path.join('/proj', '.kiro', 'skills'));
   assert.equal(api.resolveBase('kiro-crew', undefined, '/proj', '/home'), path.join('/home', '.kiro', 'crew', 'skills'));
   const t = tmp();
   run(['--tool', 'kiro', '--home', t]);
   assert.ok(fs.existsSync(path.join(t, '.kiro', 'skills', 'java', 'SKILL.md')));
+  run(['--tool', 'kiro', '--scope', 'workspace', '--target', t, '--home', t]);
+  assert.ok(fs.existsSync(path.join(t, '.kiro', 'skills', 'java', 'SKILL.md')));
   run(['--tool', 'kiro-crew', '--home', t]);
   assert.ok(fs.existsSync(path.join(t, '.kiro', 'crew', 'skills', 'java', 'SKILL.md')));
   fs.rmSync(t, { recursive: true, force: true });
 });
 
-// 4. re-install is idempotent
-test('re-install produces identical content (idempotent)', () => {
+test('4. re-install is byte-idempotent', () => {
   const t = tmp();
   run(['--tool', 'claude', '--target', t, '--home', t]);
   const base = path.join(t, '.claude', 'skills');
@@ -101,8 +112,7 @@ test('re-install produces identical content (idempotent)', () => {
   fs.rmSync(t, { recursive: true, force: true });
 });
 
-// 5 + 6. user edit preserved; --force overwrites
-test('user edit preserved without --force, overwritten with --force', () => {
+test('5+6. user edit preserved without --force; overwritten with --force', () => {
   const t = tmp();
   run(['--tool', 'claude', '--target', t, '--home', t]);
   const f = path.join(t, '.claude', 'skills', 'java', 'SKILL.md');
@@ -115,67 +125,130 @@ test('user edit preserved without --force, overwritten with --force', () => {
   fs.rmSync(t, { recursive: true, force: true });
 });
 
-// helper: write the exact previous-installer output for a skill
-function writeLegacySkill(base, skill) {
-  const dir = path.join(base, skill.name);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'SKILL.md'), api.legacyOutputs(skill)[0], 'utf8');
-}
+// ---------------------------------------------------------------------------
+// F04: real historical Claude migration (fixtures from old code)
+// ---------------------------------------------------------------------------
 
-// 7. migrate an unedited previous-installer install
-test('migration: unedited legacy file is recognised and upgraded (with backup)', () => {
+test('F04. unedited PR#5 install: ALL 26 upgrade, incl. the 6 content-changed files, none skipped', { skip: haveFixtures() ? false : 'no fixtures' }, () => {
   const t = tmp();
   const base = path.join(t, '.claude', 'skills');
-  const skills = api.listSkillFiles();
-  for (const s of skills) writeLegacySkill(base, s);
+  // lay down the EXACT bytes the old PR#5 installer wrote
+  for (const s of api.listSkillFiles()) {
+    const dir = path.join(base, s.name); fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'SKILL.md'), legacyFixture('pr5', s.name), 'utf8');
+  }
   const out = run(['--tool', 'claude', '--target', t, '--home', t]);
-  assert.match(out, /migrated/);
-  // all migrated, none skipped
-  assert.ok(!/skipped \d+ user-edited/.test(out), 'no legacy file treated as a user edit');
-  const java = path.join(base, 'java', 'SKILL.md');
-  assert.ok(fs.existsSync(java + '.bak'), 'backup written');
-  assert.ok(fs.readFileSync(java, 'utf8').includes('fcs-managed-hash:'), 'now in new format');
-  // links now resolve
-  const txt = fs.readFileSync(java, 'utf8');
-  for (const m of txt.matchAll(/\]\((\.\.?\/[^)]+)\)/g)) {
-    assert.ok(fs.existsSync(path.resolve(path.dirname(java), m[1].split('#')[0])), `link ${m[1]} resolves`);
+  assert.doesNotMatch(out, /skipped \d+ user-edited/, 'no unedited legacy file treated as a user edit');
+  assert.match(out, /26 migrated/, 'all 26 migrated');
+  // the 6 files whose repo CONTENT changed since the old install must still upgrade
+  for (const name of ['postgresql', 'pci-dss', 'csharp-dotnet', 'refusal-policy', 'eu-gdpr-psd2-dora', 'turkey-kvkk-bddk-masak']) {
+    const f = path.join(base, name, 'SKILL.md');
+    assert.ok(fs.readFileSync(f, 'utf8').includes('fcs-managed-hash:'), `${name} upgraded to new format`);
+    assert.ok(fs.existsSync(f + '.bak'), `${name} has a recoverable backup`);
+    // backup holds the ORIGINAL old bytes
+    assert.equal(fs.readFileSync(f + '.bak', 'utf8'), legacyFixture('pr5', name), `${name}.bak == original old file`);
   }
   fs.rmSync(t, { recursive: true, force: true });
 });
 
-// 8. migrate when the user edited a legacy file -> must be preserved, not clobbered
-test('migration: an EDITED legacy file is preserved, not overwritten', () => {
+test('F04b. a genuinely user-EDITED PR#5 file is preserved (byte-exact), not migrated', { skip: haveFixtures() ? false : 'no fixtures' }, () => {
   const t = tmp();
   const base = path.join(t, '.claude', 'skills');
-  const skills = api.listSkillFiles();
-  const java = skills.find((s) => s.name === 'java');
-  writeLegacySkill(base, java);
-  const f = path.join(base, 'java', 'SKILL.md');
-  fs.appendFileSync(f, '\nHAND EDIT\n'); // now it no longer matches legacy output
+  const dir = path.join(base, 'java'); fs.mkdirSync(dir, { recursive: true });
+  const edited = legacyFixture('pr5', 'java') + '\n<!-- MY TEAM NOTE -->\n';
+  fs.writeFileSync(path.join(dir, 'SKILL.md'), edited, 'utf8');
+  // the other 25 are pristine legacy
+  for (const s of api.listSkillFiles()) {
+    if (s.name === 'java') continue;
+    const d = path.join(base, s.name); fs.mkdirSync(d, { recursive: true });
+    fs.writeFileSync(path.join(d, 'SKILL.md'), legacyFixture('pr5', s.name), 'utf8');
+  }
   const out = run(['--tool', 'claude', '--target', t, '--home', t]);
-  assert.match(out, /skipped/);
-  assert.ok(fs.readFileSync(f, 'utf8').includes('HAND EDIT'), 'user edit on a legacy file preserved');
+  assert.match(out, /skipped 1 user-edited file\(s\).*java/);
+  assert.equal(fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8'), edited, 'edited file untouched byte-for-byte');
   fs.rmSync(t, { recursive: true, force: true });
 });
 
-// 9. legacy Codex sections (incl. duplicates) migrated to a single managed block
-test('Codex migration: legacy + duplicate legacy sections collapse to one managed block', () => {
+// ---------------------------------------------------------------------------
+// F05: legacy Codex sections — marker-less, with-marker, duplicated, mixed
+// ---------------------------------------------------------------------------
+
+function realOldCodexAgents() {
+  // captured old AGENTS.md if present; else synthesise the old shape (heading + skills/ refs)
+  const f = path.join(FIX, 'pr5', 'codex', 'AGENTS.md');
+  if (fs.existsSync(f)) return fs.readFileSync(f, 'utf8');
+  return '# AGENTS.md — Fintech Compliance Rules\n\nYou write code for regulated financial systems.\n\n' +
+    '- `skills/core/secure-fintech-coding.md` — baseline\n- `skills/refusal/refusal-policy.md` — limits\n';
+}
+
+test('F05a. marker-LESS legacy Codex section on an empty target migrates; old skills/ refs gone', () => {
   const t = tmp();
-  const legacy = `# My project notes\n\nKeep this.\n\n` +
-    `<!-- fintech-compliance-skills -->\n# AGENTS.md — Fintech Compliance Rules\n\n- \`skills/core/secure-fintech-coding.md\` — baseline\n` +
-    `\n<!-- fintech-compliance-skills -->\n# AGENTS.md — Fintech Compliance Rules\n\n- \`skills/refusal/refusal-policy.md\` — limits\n`;
+  // old installer on an empty target wrote the heading with NO marker
+  fs.writeFileSync(path.join(t, 'AGENTS.md'), realOldCodexAgents(), 'utf8');
+  run(['--tool', 'codex', '--target', t, '--home', t]);
+  const after = fs.readFileSync(path.join(t, 'AGENTS.md'), 'utf8');
+  assert.equal((after.match(/BEGIN fintech-compliance-skills/g) || []).length, 1, 'one managed block');
+  assert.ok(!/`skills\/core\/secure-fintech-coding\.md`/.test(after), 'old broken skills/ refs removed');
+  assert.ok(!after.includes('# AGENTS.md — Fintech Compliance Rules'), 'legacy heading gone');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('F05b. legacy section WITH preceding user text: user text byte-preserved, refs gone', () => {
+  const t = tmp();
+  const userTop = '# My project\n\nWe deploy on Fridays. Keep this.\n\n';
+  fs.writeFileSync(path.join(t, 'AGENTS.md'), userTop + '<!-- fintech-compliance-skills -->\n' + realOldCodexAgents(), 'utf8');
+  run(['--tool', 'codex', '--target', t, '--home', t]);
+  const after = fs.readFileSync(path.join(t, 'AGENTS.md'), 'utf8');
+  assert.ok(after.startsWith(userTop.trimEnd()), 'user text before the block preserved');
+  assert.equal((after.match(/BEGIN fintech-compliance-skills/g) || []).length, 1);
+  assert.ok(!/`skills\/core\//.test(after), 'old refs removed');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('F05c. DUPLICATE legacy sections collapse to one managed block', () => {
+  const t = tmp();
+  const legacy = '# Notes\n\nKeep.\n\n' +
+    '<!-- fintech-compliance-skills -->\n# AGENTS.md — Fintech Compliance Rules\n\n- `skills/core/secure-fintech-coding.md` — baseline\n' +
+    '\n<!-- fintech-compliance-skills -->\n# AGENTS.md — Fintech Compliance Rules\n\n- `skills/refusal/refusal-policy.md` — limits\n';
   fs.writeFileSync(path.join(t, 'AGENTS.md'), legacy, 'utf8');
   run(['--tool', 'codex', '--target', t, '--home', t]);
   const after = fs.readFileSync(path.join(t, 'AGENTS.md'), 'utf8');
-  assert.ok(after.includes('Keep this.'), 'user text before legacy block preserved');
+  assert.ok(after.includes('Keep.'), 'user text preserved');
   assert.equal((after.match(/BEGIN fintech-compliance-skills/g) || []).length, 1, 'one managed block');
-  assert.ok(!/`skills\/core\/secure-fintech-coding\.md`/.test(after), 'old broken skills/ refs removed');
-  assert.ok(!after.includes('<!-- fintech-compliance-skills -->'), 'legacy marker gone');
+  assert.ok(!after.includes('<!-- fintech-compliance-skills -->'), 'legacy markers gone');
+  assert.ok(!/`skills\/core\//.test(after) && !/`skills\/refusal\//.test(after), 'old refs gone');
   fs.rmSync(t, { recursive: true, force: true });
 });
 
-// 10. independent user instructions in AGENTS.md preserved
-test('Codex: user instructions outside the block are preserved on re-run', () => {
+// F01: user text AFTER the legacy section must survive
+test('F01. user instructions AFTER a legacy Codex section are byte-preserved', () => {
+  const t = tmp();
+  const before = '# Team rules\n\nAlways lint.\n\n';
+  const legacySection = '<!-- fintech-compliance-skills -->\n# AGENTS.md — Fintech Compliance Rules\n\nYou write code for regulated financial systems.\n\n- `skills/core/secure-fintech-coding.md` — baseline\n- `skills/refusal/refusal-policy.md` — limits\n';
+  const after = '\n## My deployment checklist\n\n1. Run tests.\n2. Tag release.\n\nNEVER delete this section.\n';
+  fs.writeFileSync(path.join(t, 'AGENTS.md'), before + legacySection + after, 'utf8');
+  run(['--tool', 'codex', '--target', t, '--home', t]);
+  const result = fs.readFileSync(path.join(t, 'AGENTS.md'), 'utf8');
+  assert.ok(result.includes('Always lint.'), 'user text before preserved');
+  assert.ok(result.includes('## My deployment checklist'), 'user heading after preserved');
+  assert.ok(result.includes('NEVER delete this section.'), 'user text after the legacy block preserved (F01)');
+  assert.ok(result.includes('1. Run tests.') && result.includes('2. Tag release.'), 'user list after preserved');
+  assert.ok(!/`skills\/core\/secure-fintech-coding\.md`/.test(result), 'old refs removed');
+  assert.equal((result.match(/BEGIN fintech-compliance-skills/g) || []).length, 1);
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('F01b. AGENTS.md is backed up before migration (recoverable)', () => {
+  const t = tmp();
+  const orig = '# Mine\n\nkeep\n\n<!-- fintech-compliance-skills -->\n# AGENTS.md — Fintech Compliance Rules\n\n- `skills/core/secure-fintech-coding.md` — baseline\n';
+  fs.writeFileSync(path.join(t, 'AGENTS.md'), orig, 'utf8');
+  run(['--tool', 'codex', '--target', t, '--home', t]);
+  assert.ok(fs.existsSync(path.join(t, 'AGENTS.md.bak')), 'backup exists');
+  assert.equal(fs.readFileSync(path.join(t, 'AGENTS.md.bak'), 'utf8'), orig, 'backup is the original bytes');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('10. user instructions outside the managed block preserved on plain re-run', () => {
   const t = tmp();
   run(['--tool', 'codex', '--target', t, '--home', t]);
   const p = path.join(t, 'AGENTS.md');
@@ -187,72 +260,198 @@ test('Codex: user instructions outside the block are preserved on re-run', () =>
   fs.rmSync(t, { recursive: true, force: true });
 });
 
-// 11. unknown user files under the Codex dir are preserved
-test('Codex: unknown user file under rule dir is preserved across re-install', () => {
+// ---------------------------------------------------------------------------
+// F02: A->B update; manifest key contract; unknown user files
+// ---------------------------------------------------------------------------
+
+test('F02. A->B update: unchanged managed files become B; edited one preserved+reported; unknown kept; old manifest-key format tolerated', () => {
+  const t = tmp();
+  // --- install version A ---
+  run(['--tool', 'codex', '--target', t, '--home', t]);
+  const treeRoot = path.join(t, '.fintech-compliance-skills');
+  const coreFile = path.join(treeRoot, 'skills', 'core', 'secure-fintech-coding.md');
+  const refusalFile = path.join(treeRoot, 'skills', 'refusal', 'refusal-policy.md');
+  const aContentCore = fs.readFileSync(coreFile, 'utf8');
+
+  // simulate the OLD buggy manifest-key format (no leading skills/) to prove F02 tolerance
+  const manPath = path.join(treeRoot, '.fcs-manifest.json');
+  const man = JSON.parse(fs.readFileSync(manPath, 'utf8'));
+  const legacyKeyMan = {};
+  for (const [k, v] of Object.entries(man)) legacyKeyMan[k.replace(/^skills\//, '')] = v;
+  fs.writeFileSync(manPath, JSON.stringify(legacyKeyMan, null, 2), 'utf8');
+
+  // a genuine user edit to one managed rule file
+  fs.appendFileSync(refusalFile, '\n<!-- MY OVERRIDE -->\n');
+  const refusalEdited = fs.readFileSync(refusalFile, 'utf8');
+  // an unrelated unknown user file
+  const userFile = path.join(treeRoot, 'skills', 'my-notes.md');
+  fs.writeFileSync(userFile, 'personal', 'utf8');
+
+  // --- build version B: change the REPO source so content genuinely differs ---
+  const srcCore = path.join(REPO_ROOT, 'skills', 'core', 'secure-fintech-coding.md');
+  const srcCoreOrig = fs.readFileSync(srcCore, 'utf8');
+  fs.writeFileSync(srcCore, srcCoreOrig + '\n<!-- VERSION B MARKER -->\n', 'utf8');
+  try {
+    const out = run(['--tool', 'codex', '--target', t, '--home', t]);
+    // unchanged managed file -> updated to B
+    const bCore = fs.readFileSync(coreFile, 'utf8');
+    assert.notEqual(bCore, aContentCore, 'core file changed from A');
+    assert.ok(bCore.includes('VERSION B MARKER'), 'core file is now B');
+    // edited managed file -> preserved + reported
+    assert.ok(/preserved 1 edited managed file/.test(out), 'edited managed file reported');
+    assert.equal(fs.readFileSync(refusalFile, 'utf8'), refusalEdited, 'user edit on refusal preserved byte-for-byte');
+    // unknown user file preserved
+    assert.ok(fs.existsSync(userFile) && fs.readFileSync(userFile, 'utf8') === 'personal', 'unknown user file preserved');
+  } finally {
+    fs.writeFileSync(srcCore, srcCoreOrig, 'utf8'); // restore repo source
+  }
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('F02b. --force replaces an edited managed file with B', () => {
   const t = tmp();
   run(['--tool', 'codex', '--target', t, '--home', t]);
-  const userFile = path.join(t, '.fintech-compliance-skills', 'my-notes.md');
+  const refusalFile = path.join(t, '.fintech-compliance-skills', 'skills', 'refusal', 'refusal-policy.md');
+  fs.appendFileSync(refusalFile, '\n<!-- EDIT -->\n');
+  run(['--tool', 'codex', '--target', t, '--home', t, '--force']);
+  assert.ok(!fs.readFileSync(refusalFile, 'utf8').includes('<!-- EDIT -->'), 'force overwrote the edit');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('11. unknown user files under the Codex dir are preserved across re-install', () => {
+  const t = tmp();
+  run(['--tool', 'codex', '--target', t, '--home', t]);
+  const userFile = path.join(t, '.fintech-compliance-skills', 'skills', 'core', 'my-extra.md');
   fs.writeFileSync(userFile, 'personal notes', 'utf8');
   run(['--tool', 'codex', '--target', t, '--home', t]);
   assert.ok(fs.existsSync(userFile) && fs.readFileSync(userFile, 'utf8') === 'personal notes');
   fs.rmSync(t, { recursive: true, force: true });
 });
 
-// 12. ./ ../ + anchor links handled (scala ./java.md is the regression case)
-test('local links: ./sibling.md rewritten and resolves; external URLs untouched', () => {
-  const rewritten = api.rewriteRelativeLinks('see [java](./java.md) and [core](../core/secure-fintech-coding.md) and [web](https://example.com/x.md)');
-  assert.ok(rewritten.includes('](../java/SKILL.md)'), './sibling rewritten');
-  assert.ok(rewritten.includes('](../secure-fintech-coding/SKILL.md)'), '../group/file rewritten');
-  assert.ok(rewritten.includes('https://example.com/x.md'), 'external URL left alone');
-  // and prove it on the actually installed scala file if present
+// ---------------------------------------------------------------------------
+// F03: rollback at the AGENTS.md WRITE stage (not the read stage)
+// ---------------------------------------------------------------------------
+
+test('F03. a failure WRITING AGENTS.md rolls the tree back to the previous install', () => {
+  const t = tmp();
+  run(['--tool', 'codex', '--target', t, '--home', t]); // v1
+  const treeRoot = path.join(t, '.fintech-compliance-skills');
+  const coreFile = path.join(treeRoot, 'skills', 'core', 'secure-fintech-coding.md');
+  const v1Core = fs.readFileSync(coreFile, 'utf8');
+  const v1Agents = fs.readFileSync(path.join(t, 'AGENTS.md'), 'utf8');
+
+  // Inject a failure at the WRITE stage by calling installCodex with AGENTS.md as a directory.
+  // (The READ succeeds — existing is null for a dir? no: readIf reads a file; a dir makes readFileSync throw.
+  //  To target the WRITE specifically, we make AGENTS.md writable-read but un-writable: replace it with a dir
+  //  AFTER read by monkey-patching is overkill; instead drive the library fn and fail the final write.)
+  // Simplest deterministic write-stage failure: make the AGENTS.md path a directory. readIf() will throw EISDIR
+  // on read — that's a READ failure, which the task says doesn't prove write rollback. So instead we make the
+  // PARENT write fail: pre-create AGENTS.md as a dir ONLY affects read. We therefore test via the API with a
+  // stubbed fs.writeFileSync that throws only for AGENTS.md.
+  const realWrite = fs.writeFileSync;
+  let threw = false;
+  fs.writeFileSync = function (p, ...rest) {
+    if (typeof p === 'string' && p.endsWith('AGENTS.md')) { threw = true; throw new Error('INJECTED write failure'); }
+    return realWrite.call(fs, p, ...rest);
+  };
+  try {
+    assert.throws(() => api.installCodex(t, api.listSkillFiles(), { force: false }), /INJECTED write failure/);
+  } finally {
+    fs.writeFileSync = realWrite;
+  }
+  assert.ok(threw, 'failure was injected at the AGENTS.md write');
+  // tree rolled back to v1 (not left as the half-swapped new tree)
+  assert.ok(fs.existsSync(coreFile), 'rule tree still present after failed update');
+  assert.equal(fs.readFileSync(coreFile, 'utf8'), v1Core, 'rule tree is the previous good version');
+  assert.equal(fs.readFileSync(path.join(t, 'AGENTS.md'), 'utf8'), v1Agents, 'AGENTS.md unchanged after failed write');
+  // no orphan staging/backup dirs left behind
+  const leftovers = fs.readdirSync(t).filter((n) => /\.fcs-(stage|old)-/.test(n));
+  assert.deepEqual(leftovers, [], 'no orphan staging/backup dirs');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('F03b. first-ever install failing at AGENTS.md write leaves no partial tree claimed as success', () => {
+  const t = tmp();
+  const realWrite = fs.writeFileSync;
+  fs.writeFileSync = function (p, ...rest) {
+    if (typeof p === 'string' && p.endsWith('AGENTS.md')) throw new Error('INJECTED');
+    return realWrite.call(fs, p, ...rest);
+  };
+  try {
+    assert.throws(() => api.installCodex(t, api.listSkillFiles(), { force: false }), /INJECTED/);
+  } finally { fs.writeFileSync = realWrite; }
+  // On first install there was no previous tree to roll back to; the tree must not be left as a "success".
+  // Either there is no AGENTS.md (write failed) — and the tree, if present, is not accompanied by a valid AGENTS.md.
+  assert.ok(!fs.existsSync(path.join(t, 'AGENTS.md')), 'no AGENTS.md written on failed first install');
+  const leftovers = fs.existsSync(t) ? fs.readdirSync(t).filter((n) => /\.fcs-(stage|old)-/.test(n)) : [];
+  assert.deepEqual(leftovers, [], 'no orphan staging/backup dirs');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// F07 + link correctness
+// ---------------------------------------------------------------------------
+
+test('F07. ./ ../ and anchor links rewritten with anchors preserved; code/URLs untouched', () => {
+  const src = [
+    'see [java](./java.md#hashing--encryption)',
+    'and [core](../core/secure-fintech-coding.md)',
+    'and [web](https://example.com/x.md)',
+    '`inline ../core/x.md code`',
+    '```\nfenced ../core/y.md block\n```',
+  ].join('\n');
+  const out = api.rewriteRelativeLinks(src);
+  assert.ok(out.includes('](../java/SKILL.md#hashing--encryption)'), './sibling + anchor rewritten & anchor kept');
+  assert.ok(out.includes('](../secure-fintech-coding/SKILL.md)'), '../group/file rewritten');
+  assert.ok(out.includes('https://example.com/x.md'), 'external URL left alone');
+  assert.ok(out.includes('`inline ../core/x.md code`'), 'inline code left alone');
+  assert.ok(out.includes('fenced ../core/y.md block'), 'fenced code left alone');
+});
+
+test('12. installed scala links (./java.md regression) resolve on disk', () => {
   const t = tmp();
   run(['--tool', 'claude', '--target', t, '--home', t]);
   const scala = path.join(t, '.claude', 'skills', 'scala', 'SKILL.md');
   if (fs.existsSync(scala)) {
     const txt = fs.readFileSync(scala, 'utf8');
+    let checked = 0;
     for (const m of txt.matchAll(/\]\((\.\.?\/[^)]+)\)/g)) {
-      assert.ok(fs.existsSync(path.resolve(path.dirname(scala), m[1].split('#')[0])), `scala link ${m[1]} resolves`);
+      const file = m[1].split('#')[0];
+      assert.ok(fs.existsSync(path.resolve(path.dirname(scala), file)), `scala link ${m[1]} resolves`);
+      checked++;
     }
+    assert.ok(checked > 0, 'scala actually had local links to check');
   }
   fs.rmSync(t, { recursive: true, force: true });
 });
 
-// 13. real YAML negative fixture: a colon-bearing description must still parse
-test('YAML: a description with colon/quote/backslash/unicode parses (negative fixture)', () => {
-  // emulate what the generator produces for a tricky description
+// ---------------------------------------------------------------------------
+// YAML, CLI, packed artifact
+// ---------------------------------------------------------------------------
+
+test('13. real YAML: tricky description parses; a broken frontmatter actually throws (negative fixture)', () => {
   const tricky = 'Config: "quoted", path C:\\x, unicode é — and: colons';
   const fm = `name: "x"\ndescription: ${JSON.stringify(tricky)}\ntriggers: "a, b"\n`;
   const meta = yaml.load(fm);
   assert.equal(meta.description, tricky);
-  // and a deliberately BROKEN frontmatter must throw (proves the test can fail)
   assert.throws(() => yaml.load('description: "unterminated\nname: x'), /./);
+  // and prove the generator's real output for EVERY skill parses
+  for (const s of api.listSkillFiles()) {
+    const content = api.managedContent(s);
+    const fmBlock = content.slice(3, content.indexOf('\n---', 3));
+    const parsed = yaml.load(fmBlock);
+    assert.equal(typeof parsed.name, 'string');
+    assert.equal(typeof parsed.description, 'string');
+    assert.equal(typeof parsed.triggers, 'string');
+  }
 });
 
-// 14. bad CLI args
-test('CLI: unknown --tool and --scope exit non-zero with a message', () => {
+test('14. bad CLI args exit non-zero with a message', () => {
   assert.throws(() => run(['--tool', 'nope']), (e) => /Unknown --tool/.test(e.stderr.toString()));
   assert.throws(() => run(['--tool', 'kiro', '--scope', 'bogus']), (e) => /Unknown --scope/.test(e.stderr.toString()));
 });
 
-// 15. mid-update failure preserves the previous working install
-test('atomicity: a failed Codex update leaves the previous install intact', () => {
-  const t = tmp();
-  run(['--tool', 'codex', '--target', t, '--home', t]); // v1 installed
-  const before = fs.readFileSync(path.join(t, '.fintech-compliance-skills', 'skills', 'core', 'secure-fintech-coding.md'), 'utf8');
-  // Make AGENTS.md a directory so writing it throws AFTER the tree would swap — simulate failure.
-  // Instead, make the staging swap fail by locking: emulate by pre-creating an unwritable AGENTS.md path as a dir.
-  const agents = path.join(t, 'AGENTS.md');
-  fs.rmSync(agents, { force: true });
-  fs.mkdirSync(agents); // now writeFileSync(AGENTS.md) will throw EISDIR
-  assert.throws(() => run(['--tool', 'codex', '--target', t, '--home', t]));
-  // tree must still be the previous good one
-  assert.ok(fs.existsSync(path.join(t, '.fintech-compliance-skills', 'skills', 'core', 'secure-fintech-coding.md')));
-  assert.equal(fs.readFileSync(path.join(t, '.fintech-compliance-skills', 'skills', 'core', 'secure-fintech-coding.md'), 'utf8'), before);
-  fs.rmSync(t, { recursive: true, force: true });
-});
-
-// 16. install from the packed npm artifact
-test('packed artifact: npm pack tarball installs correctly', () => {
+test('16. packed npm artifact installs + re-installs correctly', () => {
   const t = tmp();
   const isWin = process.platform === 'win32';
   const packOut = execFileSync(isWin ? 'npm.cmd' : 'npm', ['pack', '--pack-destination', t], { cwd: REPO_ROOT, stdio: 'pipe', shell: isWin }).toString().trim();
@@ -267,5 +466,8 @@ test('packed artifact: npm pack tarball installs correctly', () => {
   const base = path.join(dest, '.claude', 'skills');
   const got = fs.readdirSync(base).filter((d) => fs.statSync(path.join(base, d)).isDirectory());
   assert.equal(got.length, sourceSkillNames.length, 'all skills installed from the tarball');
+  // re-install from the packed artifact is idempotent
+  const out2 = execFileSync(process.execPath, [pkgInstaller, '--tool', 'claude', '--target', dest, '--home', dest], { stdio: 'pipe' }).toString();
+  assert.match(out2, /0 new, 0 migrated/, 're-install from tarball is idempotent');
   fs.rmSync(t, { recursive: true, force: true });
 });

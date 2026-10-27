@@ -3,13 +3,14 @@ name: Publish to npm
 # Publishes the package when you push a version tag (e.g. v1.0.0),
 # or when you run this workflow by hand from the Actions tab.
 #
-# Two ways to authenticate — the workflow supports BOTH:
-#   1. Trusted Publishing (OIDC) — no secrets at all. Requires the package to
-#      already exist on npm once, and a Trusted Publisher configured on npmjs.com
-#      pointing at this repo + this workflow file.
-#   2. Automation token — set a repo secret named NPM_TOKEN. Works for the very
-#      first publish too.
+# Authentication (the workflow supports BOTH):
+#   1. Trusted Publishing (OIDC) — no secrets. Requires the package to exist on npm once
+#      and a Trusted Publisher configured on npmjs.com for this repo + workflow.
+#   2. Automation token — set a repo secret named NPM_TOKEN (works for the first publish).
 # If NPM_TOKEN is set it is used; otherwise the job relies on OIDC.
+#
+# The quality gate (verify + test) runs BEFORE publish on the SAME checkout, so the
+# artifact that is published is the one that passed. A failing gate stops the job.
 
 on:
   push:
@@ -30,11 +31,12 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'          # ships npm >= 11.5.1 (OIDC-capable)
+          node-version: '20'          # current LTS; npm >= 10 supports OIDC/provenance
           registry-url: 'https://registry.npmjs.org'
 
       - name: Verify package version matches the tag
         if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
         run: |
           PKG_VERSION="v$(node -p "require('./package.json').version")"
           TAG="${GITHUB_REF_NAME}"
@@ -44,10 +46,11 @@ jobs:
             exit 1
           fi
 
-      - name: Install dev dependencies
-        run: npm ci || npm install
+      # Lockfile is committed: `npm ci` and let a mismatch fail (no ||install mask).
+      - name: Install dev dependencies (npm ci)
+        run: npm ci
 
-      - name: Quality gate (must pass before publish)
+      - name: Quality gate — must pass before publish (same checkout that is published)
         run: |
           npm run verify
           npm test

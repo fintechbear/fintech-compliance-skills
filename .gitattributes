@@ -4,3 +4,5 @@ installer/index.js text eol=lf
 *.md text eol=lf
 *.json text eol=lf
 LICENSE text eol=lf
+# Historical fixtures must stay byte-exact (LF) so their recognition hashes match on every OS.
+installer/fixtures/** text eol=lf
