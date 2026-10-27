@@ -5,7 +5,10 @@
   "description": "TypeScript + PostgreSQL reference for the fintech-transfer control contract. Narrow reference, not a product SDK.",
   "type": "module",
   "scripts": {
-    "start": "tsx main.ts"
+    "start": "tsx main.ts && tsx webhook.ts && tsx ledger.ts",
+    "transfer": "tsx main.ts",
+    "webhook": "tsx webhook.ts",
+    "ledger": "tsx ledger.ts"
   },
   "engines": {
     "node": ">=20"

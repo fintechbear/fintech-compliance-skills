@@ -204,6 +204,81 @@
       "skill_refs": [],
       "test_refs": ["examples/dotnet-postgres-harness/Program.cs"],
       "limitations": "Canonical payload serialization must be documented per operation; this control states the fingerprint, not the serializer."
+    },
+    {
+      "id": "FCS-OUTBOX-001",
+      "statement": "Before calling an external payment provider, write a durable intent/outbox row in a local transaction. One DB transaction cannot undo an external side effect, so the intent must be persisted first and carry its own outbound idempotency key, business id and (tenant, provider) scope.",
+      "applicability": "Any outbound call that can move money at a provider.",
+      "control_type": "preventive",
+      "source_refs": [
+        { "kind": "engineering_recommendation", "label": "Transactional outbox + outbound idempotency key", "url": null, "verified": true }
+      ],
+      "source_version": null, "effective_date": null, "reviewed_at": null,
+      "review_status": "needs_review",
+      "owner_role": "engineering",
+      "skill_refs": ["skills/core/fintech-provider-webhook.md"],
+      "test_refs": ["examples/ts-postgres-harness/webhook.ts"],
+      "limitations": "States the durability requirement; the dispatcher/retry policy is the skill's concern."
+    },
+    {
+      "id": "FCS-WEBHOOK-001",
+      "statement": "Verify a webhook signature on the ORIGINAL raw request body (before any parse/re-serialize). Enforce the provider's timestamp/replay window; do not invent a universal one. Persist a durable inbox row with a DB unique constraint for dedup; acknowledge only after durable acceptance.",
+      "applicability": "Any inbound provider webhook.",
+      "control_type": "preventive",
+      "source_refs": [
+        { "kind": "engineering_recommendation", "label": "Signed-webhook verification on raw body + durable inbox dedup", "url": "https://docs.stripe.com/webhooks", "verified": false }
+      ],
+      "source_version": null, "effective_date": null, "reviewed_at": null,
+      "review_status": "needs_review",
+      "owner_role": "engineering",
+      "skill_refs": ["skills/core/fintech-provider-webhook.md"],
+      "test_refs": ["examples/ts-postgres-harness/webhook.ts"],
+      "limitations": "The exact window and signature scheme are provider-specific; this control states the shape, not one provider's constants."
+    },
+    {
+      "id": "FCS-OUTCOME-001",
+      "statement": "Model provider outcome as explicit states: not_started, pending/unknown, confirmed_success, confirmed_failure. An unknown/timeout outcome is NOT auto-treated as failure, and is never resolved by blindly retrying with a new idempotency key. Terminal transitions and conflicting-evidence handling are documented.",
+      "applicability": "Any interaction whose provider result can be ambiguous (timeout, 5xx, lost response).",
+      "control_type": "preventive",
+      "source_refs": [
+        { "kind": "engineering_recommendation", "label": "Explicit unknown-outcome state machine; no blind re-charge", "url": "https://docs.stripe.com/error-low-level", "verified": false }
+      ],
+      "source_version": null, "effective_date": null, "reviewed_at": null,
+      "review_status": "needs_review",
+      "owner_role": "engineering",
+      "skill_refs": ["skills/core/fintech-provider-webhook.md"],
+      "test_refs": ["examples/ts-postgres-harness/webhook.ts"],
+      "limitations": "Reconciliation of a truly stuck unknown is an operational process; this control forbids the unsafe automatic resolution."
+    },
+    {
+      "id": "FCS-LEDGER-001",
+      "statement": "Record money in a double-entry ledger: every business event posts balanced entries per currency (debits == credits), rows are append-only, each posting carries a unique business reference, and corrections are made by reversal/adjusting entries — never by editing a posted row. Currencies are not summed together.",
+      "applicability": "Any component that records balances or money movement.",
+      "control_type": "preventive",
+      "source_refs": [
+        { "kind": "engineering_recommendation", "label": "Append-only double-entry ledger with reversal entries", "url": null, "verified": true }
+      ],
+      "source_version": null, "effective_date": null, "reviewed_at": null,
+      "review_status": "needs_review",
+      "owner_role": "engineering",
+      "skill_refs": ["skills/core/fintech-ledger-reconciliation.md"],
+      "test_refs": ["examples/ts-postgres-harness/ledger.ts"],
+      "limitations": "Pending/available/posted distinction and FX are stated as out-of-scope unless the skill models them explicitly."
+    },
+    {
+      "id": "FCS-RECON-001",
+      "statement": "Reconciliation surfaces discrepancies between provider records and internal ledger (missing, duplicate, delayed, amount/currency mismatch). A discrepancy is a flag for review, NOT by itself authorization to re-pay or auto-adjust.",
+      "applicability": "Any reconciliation between an external provider and the internal ledger.",
+      "control_type": "detective",
+      "source_refs": [
+        { "kind": "engineering_recommendation", "label": "Reconciliation as detective control; no auto-remediation of money", "url": null, "verified": true }
+      ],
+      "source_version": null, "effective_date": null, "reviewed_at": null,
+      "review_status": "needs_review",
+      "owner_role": "engineering",
+      "skill_refs": ["skills/core/fintech-ledger-reconciliation.md"],
+      "test_refs": ["examples/ts-postgres-harness/ledger.ts"],
+      "limitations": "Detects and classifies; remediation is a reviewed operational decision, not an automatic money movement."
     }
   ]
 }
