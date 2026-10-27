@@ -45,8 +45,8 @@ run_body() {
   done
   if [ "$ready" -ne 1 ]; then echo "### FATAL: postgres readiness timeout"; return 21; fi
 
-  echo "### npm ci"
-  ( cd -- "$H" && npm ci ) || { echo "### FATAL: npm ci failed"; return 18; }
+  echo "### npm ci / install"
+  ( cd -- "$H" && { [ -f package-lock.json ] && npm ci || npm install --no-audit --no-fund; } ) || { echo "### FATAL: npm install failed"; return 18; }
   echo "### running harness (tsx main.ts)"
   export PGCONN="postgresql://fcs:fcs@127.0.0.1:${PORT}/fcs"
   ( cd -- "$H" && npm start --silent )

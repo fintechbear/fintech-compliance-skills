@@ -25,7 +25,7 @@ docker exec "$PG" postgres --version
 echo "### running harness in ${FCS_NODE_IMAGE:-node:20} (--network host)"
 docker run --rm --network host -v "$SCRIPT_DIR":/h -w /h \
   -e PGCONN="postgresql://fcs:fcs@127.0.0.1:${PORT}/fcs" \
-  "${FCS_NODE_IMAGE:-node:20}" bash -lc 'node --version; npm ci && npm start --silent'
+  "${FCS_NODE_IMAGE:-node:20}" bash -lc 'node --version; if [ -f package-lock.json ]; then npm ci; else npm install --no-audit --no-fund; fi && npm start --silent'
 RC=$?
 echo "### harness exit=$RC"
 exit $RC
