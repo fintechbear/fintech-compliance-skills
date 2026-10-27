@@ -6,6 +6,7 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const { validate } = require('./jsonschema.js');
 
 const repoRoot = path.resolve(__dirname, '..');
 const errors = [];
@@ -15,29 +16,28 @@ function warn(m) { warnings.push(m); }
 function rel(p) { return path.join(repoRoot, p.replace(/\//g, path.sep)); }
 function readJSON(p) { return JSON.parse(fs.readFileSync(rel(p), 'utf8')); }
 
-// --- 1. Load + shape-check the catalog ---
+// --- schemas (R11: enforce the real JSON Schemas, not ad-hoc shape checks) ---
+const CONTROL_SCHEMA = readJSON('controls/schema/control.schema.json');
+const PROFILE_SCHEMA = readJSON('controls/schema/profile.schema.json');
+
+// --- 1. Load + schema-validate the catalog ---
 const catalog = readJSON('controls/catalog.json');
 const ids = new Set();
-const ID_RE = /^FCS-[A-Z]+-[0-9]{3}$/;
-const STATUS = new Set(['verified', 'needs_review', 'unverified']);
-const TYPES = new Set(['refusal_red_line', 'preventive', 'detective', 'process', 'data_handling']);
-const SRC_KINDS = new Set(['law', 'standard', 'project_policy', 'engineering_recommendation']);
 
 for (const c of catalog.controls) {
-  if (!ID_RE.test(c.id || '')) { err(`bad control id: ${c.id}`); continue; }
+  // Real schema validation first: enum, additionalProperties:false, $ref source_refs, etc.
+  for (const e of validate(c, CONTROL_SCHEMA)) err(`control ${c.id || '(no id)'}${e}`);
   if (ids.has(c.id)) err(`duplicate control id: ${c.id}`);
-  ids.add(c.id);
-  if (!c.statement || c.statement.length < 10) err(`${c.id}: statement too short`);
-  if (!TYPES.has(c.control_type)) err(`${c.id}: bad control_type ${c.control_type}`);
-  if (!STATUS.has(c.review_status)) err(`${c.id}: bad review_status ${c.review_status}`);
-  if (!Array.isArray(c.source_refs) || c.source_refs.length < 1) err(`${c.id}: needs >=1 source_ref`);
-  else for (const s of c.source_refs) {
-    if (!SRC_KINDS.has(s.kind)) err(`${c.id}: bad source kind ${s.kind}`);
-    if (!s.label) err(`${c.id}: source_ref missing label`);
+  if (c.id) ids.add(c.id);
+  // staleness: a 'verified' claim with no reviewed_at is an error (not just a warning):
+  // a verified status asserts a human confirmed article+scope, which requires a review date.
+  if (c.review_status === 'verified' && !c.reviewed_at) err(`${c.id}: review_status 'verified' requires a reviewed_at date`);
+  // a source_ref marked verified:true while the control is not 'verified' is contradictory
+  for (const s of (c.source_refs || [])) {
+    if (s && s.verified === true && c.review_status !== 'verified') {
+      warn(`${c.id}: source_ref '${s.label}' claims verified:true but control review_status is ${c.review_status}`);
+    }
   }
-  if (!c.owner_role) err(`${c.id}: missing owner_role`);
-  // staleness: a 'verified' claim with no reviewed_at is suspicious
-  if (c.review_status === 'verified' && !c.reviewed_at) warn(`${c.id}: verified but reviewed_at is null`);
   // broken skill_refs / test_refs
   for (const sk of (c.skill_refs || [])) if (!fs.existsSync(rel(sk))) err(`${c.id}: skill_ref not found: ${sk}`);
   for (const tr of (c.test_refs || [])) {
@@ -71,14 +71,14 @@ for (const f of skillFiles) {
   }
 }
 
-// --- 3. Profiles: schema-ish + conflict surfacing ---
+// --- 3. Profiles: real schema validation + conflict surfacing ---
 const profDir = rel('controls/profiles');
 if (fs.existsSync(profDir)) {
   for (const pf of fs.readdirSync(profDir).filter((x) => x.endsWith('.json'))) {
     const p = readJSON(`controls/profiles/${pf}`);
-    if (!p.profile_id) err(`${pf}: missing profile_id`);
-    if (!p.entity_role || p.entity_role.declared !== true) err(`${pf}: entity_role must be explicitly declared (declared:true)`);
-    if (!Array.isArray(p.jurisdictions) || p.jurisdictions.length < 1) err(`${pf}: needs >=1 jurisdiction`);
+    for (const e of validate(p, PROFILE_SCHEMA)) err(`profile ${pf}${e}`);
+    // declared must be true (schema allows the boolean; the project rule is it must be true)
+    if (p.entity_role && p.entity_role.declared !== true) err(`${pf}: entity_role.declared must be true (legal role is declared, never inferred)`);
     // conflict: a vendor profile that also claims to run AML screening is surfaced, not auto-resolved
     if (p.entity_role && p.entity_role.kind === 'vendor_to_obliged_entity') {
       const txt = JSON.stringify(p).toLowerCase();
