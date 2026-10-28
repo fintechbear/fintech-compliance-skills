@@ -43,22 +43,28 @@ cp tsconfig.json "$BL/tsconfig.json" 2>/dev/null || true
 ln -sf "$HARNESS_DIR/node_modules" "$BL/node_modules" 2>/dev/null || true
 
 fail=0
-# Reset the DB to a pristine public schema before each probe so one probe's tables/types
-# cannot collide with the next (the pg_type 23505 we hit when probes share a database).
-reset_db() {
-  node -e '
-    const pg=require("pg");
-    (async()=>{ const c=new pg.Client({connectionString:process.env.PGCONN});
-      await c.connect();
-      await c.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
-      await c.query("GRANT ALL ON SCHEMA public TO public;");
-      await c.end(); })().catch(e=>{console.error("reset failed",e.message);process.exit(3);});' || return 3
-}
+# Give each probe its OWN fresh database so one probe's tables/types can never collide with
+# the next (the pg_type 23505 seen when probes share one DB). We CREATE DATABASE fcs_probe_N
+# from a maintenance connection, then point the probe's PGCONN at it.
+ADMIN_PGCONN="$PGCONN"
+probe_no=0
 run_probe() {
   local name="$1"; shift
-  echo "### FAILING-FIRST probe: $name"
-  reset_db || { echo "  FAIL could not reset DB before $name"; fail=1; return; }
-  if PGCONN="$PGCONN" BL="$HARNESS_DIR/$BL" node --import tsx "$HARNESS_DIR/baseline-probes/$name"; then
+  probe_no=$((probe_no+1))
+  local db="fcs_probe_${probe_no}"
+  echo "### FAILING-FIRST probe: $name  (db=$db)"
+  # create a clean database from the maintenance connection
+  if ! node -e '
+      const pg=require("pg"); const db=process.argv[1];
+      (async()=>{ const c=new pg.Client({connectionString:process.env.ADMIN_PGCONN}); await c.connect();
+        await c.query("DROP DATABASE IF EXISTS "+db+" WITH (FORCE)");
+        await c.query("CREATE DATABASE "+db);
+        await c.end(); })().catch(e=>{console.error("create db failed",e.message);process.exit(3);});' "$db"; then
+    echo "  FAIL could not create $db for $name"; fail=1; return
+  fi
+  # a PGCONN that points at the fresh database (swap the trailing /dbname)
+  local probe_pgconn="${ADMIN_PGCONN%/*}/$db"
+  if PGCONN="$probe_pgconn" BL="$HARNESS_DIR/$BL" node --import tsx "$HARNESS_DIR/baseline-probes/$name"; then
     echo "  ok   base reproduced the bug ($name)"
   else
     echo "  FAIL base did NOT reproduce the bug ($name) — failing-first proof is void"
