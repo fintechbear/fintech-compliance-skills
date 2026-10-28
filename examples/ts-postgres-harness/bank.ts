@@ -13,6 +13,7 @@ export type Outcome =
   | 'posted' | 'replayed' | 'conflict'
   | 'bad_amount' | 'unsupported_currency' | 'over_precision' | 'overflow'
   | 'currency_mismatch' | 'not_found_in_tenant' | 'insufficient_funds'
+  | 'same_account' | 'consistency_error'
   | 'retry_exhausted';
 
 export interface TransferReq {
@@ -75,6 +76,15 @@ export async function transfer(
     }
     throw e;
   }
+
+  // R01: self-transfer contract. A transfer whose source and destination are the same
+  // account is a no-op at best and, on an optimistic-version ledger, actively WRONG: the
+  // debit bumps the row's version so the credit's WHERE version=old matches 0 rows, leaving
+  // the balance debited and the credit lost. There is no correct "move money to yourself",
+  // so we REFUSE it explicitly rather than post a half-write. Checked before idempotency so
+  // a self-transfer never records an idempotency row or audit entry.
+  if (req.src === req.dst) return { outcome: 'same_account' };
+
   const fp = fingerprint(req);
 
   const MAX_RETRY = 8;
@@ -106,11 +116,16 @@ export async function transfer(
       if (Number(src.balance_minor) < amountMinor) { await c.query('ROLLBACK'); return { outcome: 'insufficient_funds' }; }
 
       const transferId = `${tenant}:${operation}:${key}`;
-      // Debit + credit with optimistic version bump.
-      await c.query('UPDATE accounts SET balance_minor=balance_minor-$1, version=version+1 WHERE tenant_id=$2 AND id=$3 AND version=$4',
+      // Debit + credit with optimistic version bump. R01: assert each UPDATE changed EXACTLY
+      // the one row we expect. A rowCount other than 1 means the optimistic version no longer
+      // matched (a concurrent writer, or a logic error like a self-transfer slipping through):
+      // we must NOT proceed to COMMIT on a partial write — roll the whole transaction back.
+      const deb = await c.query('UPDATE accounts SET balance_minor=balance_minor-$1, version=version+1 WHERE tenant_id=$2 AND id=$3 AND version=$4',
         [amountMinor, tenant, req.src, src.version]);
-      await c.query('UPDATE accounts SET balance_minor=balance_minor+$1, version=version+1 WHERE tenant_id=$2 AND id=$3 AND version=$4',
+      if (deb.rowCount !== 1) { await c.query('ROLLBACK'); return { outcome: 'consistency_error' }; }
+      const cre = await c.query('UPDATE accounts SET balance_minor=balance_minor+$1, version=version+1 WHERE tenant_id=$2 AND id=$3 AND version=$4',
         [amountMinor, tenant, req.dst, dst.version]);
+      if (cre.rowCount !== 1) { await c.query('ROLLBACK'); return { outcome: 'consistency_error' }; }
       await c.query('INSERT INTO audit(tenant_id,transfer_id,src,dst,amount_minor,currency) VALUES($1,$2,$3,$4,$5,$6)',
         [tenant, transferId, req.src, req.dst, amountMinor, req.currency]);
       // idempotency row in the SAME transaction — unique PK is the real dedup guarantee.

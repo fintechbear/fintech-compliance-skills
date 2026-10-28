@@ -57,6 +57,30 @@ async function main() {
     return (await transfer(pool, 'T2', 'xfer', k(), { src: 'A', dst: 'B', amount: '1.00', currency: 'USD' })).outcome === 'not_found_in_tenant';
   });
 
+  // --- R01: self-transfer (source == destination) ---
+  // Narrow reproduction from the finding: A starts at 10.00 (1000 minor); a transfer of
+  // 1.00 (100 minor) A->A used to return 'posted' while the credit silently matched 0 rows
+  // (version already bumped by the debit), so A ended at 9.00 — money vanished. Now it is
+  // refused OUTRIGHT and nothing is written.
+  await check('R01: self-transfer A->A is refused (same_account), not posted', async () => {
+    await fresh(); // A = 10.00, B = 0
+    return (await transfer(pool, 'T1', 'xfer', k(), { src: 'A', dst: 'A', amount: '1.00', currency: 'USD' })).outcome === 'same_account';
+  });
+  await check('R01: refused self-transfer leaves balance unchanged and writes NO audit/idempotency', async () => {
+    await fresh(); const key = k();
+    const r = await transfer(pool, 'T1', 'xfer', key, { src: 'A', dst: 'A', amount: '1.00', currency: 'USD' });
+    const auditN = await count(pool, 'audit', 'tenant_id=$1', ['T1']);
+    const idemN = await count(pool, 'idempotency', 'tenant_id=$1 AND key=$2', ['T1', key]);
+    return r.outcome === 'same_account'
+      && (await balance(pool, 'T1', 'A')) === 10_00   // NOT 9_00 (no lost credit)
+      && auditN === 0 && idemN === 0;
+  });
+  await check('R01: amount validation still runs before the self-transfer check (bad amount A->A)', async () => {
+    await fresh();
+    // a zero amount is still bad_amount, not same_account — validation order preserved
+    return (await transfer(pool, 'T1', 'xfer', k(), { src: 'A', dst: 'A', amount: '0', currency: 'USD' })).outcome === 'bad_amount';
+  });
+
   // --- FCS-IDEMP-001 ---
   await check('idempotency: same key + same payload replays (no double spend)', async () => {
     await fresh(); const key = k(); const req = { src: 'A', dst: 'B', amount: '3.00', currency: 'USD' };
