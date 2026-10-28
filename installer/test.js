@@ -476,6 +476,91 @@ test('16. packed npm artifact installs + re-installs correctly', () => {
   assert.match(out2, /0 new, 0 migrated/, 're-install from tarball is idempotent');
   fs.rmSync(t, { recursive: true, force: true });
 });
+// ---------------------------------------------------------------------------
+// R08: single frontmatter + real author metadata (no derived/duplicated block)
+// ---------------------------------------------------------------------------
+// A skill whose SOURCE carries YAML frontmatter must install with EXACTLY ONE
+// frontmatter block, using the author's own name/description/triggers — not a
+// derived description prepended while the author's block lingers in the body.
+function frontmatterSkillName() {
+  // Pick a source skill that actually starts with a `---` fence.
+  for (const s of api.listSkillFiles()) {
+    const txt = fs.readFileSync(s.abs, 'utf8');
+    if (/^\uFEFF?---[ \t]*\r?\n/.test(txt)) return s.name;
+  }
+  return null;
+}
+
+test('R08. author-frontmatter skill installs with a SINGLE block + author metadata (no duplicate, no derived override)', () => {
+  const name = frontmatterSkillName();
+  assert.ok(name, 'repo has at least one source skill with YAML frontmatter');
+  const src = api.listSkillFiles().find((s) => s.name === name);
+  const srcText = fs.readFileSync(src.abs, 'utf8');
+  // author's declared metadata from the SOURCE
+  const srcFm = srcText.slice(srcText.indexOf('---') + 3, srcText.indexOf('\n---', 3));
+  const srcMeta = yaml.load(srcFm);
+
+  const t = tmp();
+  run(['--tool', 'claude', '--target', t, '--home', t]);
+  const installed = fs.readFileSync(path.join(t, '.claude', 'skills', name, 'SKILL.md'), 'utf8');
+
+  // exactly ONE frontmatter fence pair (a `---` line at col 0, twice — open+close)
+  const fences = (installed.match(/^---[ \t]*$/gm) || []).length;
+  assert.equal(fences, 2, 'exactly one frontmatter block (open+close), not a duplicated/lingering one');
+
+  // body (everything after the first closing fence) must NOT contain a second
+  // frontmatter `name:`/`description:` key line left over from the source.
+  const afterFm = installed.slice(installed.indexOf('\n---', 3) + 4);
+  assert.ok(!/^\s*name:\s*["']?fintech/m.test(afterFm), 'no leftover author frontmatter in body');
+  assert.ok(!/^\s*description:\s*["']/m.test(afterFm), 'no leftover description key in body');
+
+  // installed description/name/triggers equal the AUTHOR's, not a derived first-bold run
+  const meta = yaml.load(installed.slice(3, installed.indexOf('\n---', 3)));
+  assert.equal(meta.name, srcMeta.name, 'author name preserved');
+  assert.equal(meta.description, srcMeta.description, 'author description preserved verbatim (not re-derived)');
+  if (srcMeta.triggers) assert.equal(meta.triggers, srcMeta.triggers, 'author triggers preserved');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('R08b. a metadata-less (old-style) skill still installs with ONE derived frontmatter (explicit fallback)', () => {
+  // secure-fintech-coding has NO source frontmatter: it starts with `# Skill:`.
+  const name = 'secure-fintech-coding';
+  const src = api.listSkillFiles().find((s) => s.name === name);
+  assert.ok(src, 'fallback skill exists');
+  const srcText = fs.readFileSync(src.abs, 'utf8');
+  assert.ok(!/^\uFEFF?---[ \t]*\r?\n/.test(srcText), 'source has NO frontmatter (the fallback case)');
+
+  const t = tmp();
+  run(['--tool', 'claude', '--target', t, '--home', t]);
+  const installed = fs.readFileSync(path.join(t, '.claude', 'skills', name, 'SKILL.md'), 'utf8');
+  const fences = (installed.match(/^---[ \t]*$/gm) || []).length;
+  assert.equal(fences, 2, 'exactly one derived frontmatter block for a metadata-less source');
+  const meta = yaml.load(installed.slice(3, installed.indexOf('\n---', 3)));
+  assert.equal(meta.name, name, 'name derives from the skill dir name');
+  assert.ok(meta.description && meta.description.length > 0, 'a description is derived from the first bold run');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('R08c. client-specific (non-standard) source frontmatter keys are carried through, not dropped', () => {
+  // Build a throwaway source skill with an extra key and verify managedContent keeps it.
+  const extraKey = 'x-client-meta';
+  const t = tmp();
+  const grp = path.join(t, 'extra');
+  fs.mkdirSync(grp, { recursive: true });
+  const f = path.join(grp, 'demo-skill.md');
+  fs.writeFileSync(f, `---\nname: "demo-skill"\ndescription: "Author desc."\ntriggers: "demo"\n${extraKey}: "keep-me-42"\n---\n\n# Skill: Demo\n\n**Body.**\n`, 'utf8');
+  const skill = { group: 'extra', file: 'demo-skill.md', name: 'demo-skill', abs: f };
+  const mc = api.managedContent(skill);
+  const fences = (mc.match(/^---[ \t]*$/gm) || []).length;
+  assert.equal(fences, 2, 'single frontmatter block');
+  const meta = yaml.load(mc.slice(3, mc.indexOf('\n---', 3)));
+  assert.equal(meta.name, 'demo-skill');
+  assert.equal(meta.description, 'Author desc.', 'author description kept');
+  assert.equal(meta[extraKey], 'keep-me-42', 'client-specific key carried through verbatim');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+
 
 // ---------------------------------------------------------------------------
 // G1-G4: second-round regressions (deeper Codex migration + atomic AGENTS.md write)

@@ -67,14 +67,64 @@ function listSkillFiles() {
 
 function parseSkill(abs) {
   const text = fs.readFileSync(abs, 'utf8');
-  const titleMatch = text.match(/^#\s+(?:Skill:\s*)?(.+)$/m);
+  const fm = parseFrontmatter(text);          // { meta, body } — meta null when no source frontmatter
+  const body = fm.meta ? fm.body.replace(/^\s*\n/, '') : text;      // body is ALWAYS frontmatter-free from here on
+  const titleMatch = body.match(/^#\s+(?:Skill:\s*)?(.+)$/m);
   const title = titleMatch ? titleMatch[1].trim() : path.basename(abs, '.md');
-  const descMatch = text.match(/\*\*(.+?)\*\*/s);
-  const desc = descMatch ? descMatch[1].trim().replace(/\s+/g, ' ') : title;
-  return { title, desc, body: text };
+  // R08: prefer the AUTHOR's frontmatter metadata. Only fall back to deriving a
+  // description from the first bold run when the source carries no frontmatter.
+  let desc;
+  if (fm.meta && typeof fm.meta.description === 'string' && fm.meta.description.trim()) {
+    desc = fm.meta.description.trim().replace(/\s+/g, ' ');
+  } else {
+    const descMatch = body.match(/\*\*(.+?)\*\*/s);
+    desc = descMatch ? descMatch[1].trim().replace(/\s+/g, ' ') : title;
+  }
+  // Author-set name wins over the filename-derived default (used by managedContent).
+  const name = fm.meta && typeof fm.meta.name === 'string' && fm.meta.name.trim()
+    ? fm.meta.name.trim() : null;
+  const triggers = fm.meta && typeof fm.meta.triggers === 'string' && fm.meta.triggers.trim()
+    ? fm.meta.triggers.trim() : null;
+  // Any frontmatter key that is NOT one of our three standard fields is client-specific
+  // metadata the author added — carry it through unchanged so we never silently drop it.
+  const STD = new Set(['name', 'description', 'triggers']);
+  const extraMeta = {};
+  if (fm.meta) for (const k of Object.keys(fm.meta)) if (!STD.has(k)) extraMeta[k] = fm.meta[k];
+  return { title, desc, body, name, triggers, extraMeta, hadFrontmatter: !!fm.meta };
 }
 
-function triggersFor(skill) {
+// Minimal, dependency-free YAML-frontmatter reader for the SUBSET our skill files use:
+// a leading `---` block of `key: value` lines where value is a (optionally quoted) scalar.
+// It does NOT attempt full YAML — nested structures are kept as their raw string so we
+// round-trip rather than lose them. Returns { meta, body }; meta is null when the file
+// does not open with a `---` fence.
+function parseFrontmatter(text) {
+  // Must START with a frontmatter fence (allow a UTF-8 BOM). A `---` later in the body
+  // (e.g. a horizontal rule) is NOT frontmatter.
+  const m = text.match(/^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?/);
+  if (!m) return { meta: null, body: text };
+  const meta = {};
+  for (const rawLine of m[1].split(/\r?\n/)) {
+    const line = rawLine.replace(/\s+$/, '');
+    if (!line.trim() || /^\s*#/.test(line)) continue;        // blank or comment
+    const kv = line.match(/^([A-Za-z0-9_-]+):\s?(.*)$/);
+    if (!kv) continue;                                        // not a simple scalar line — skip (round-tripped only as raw if needed)
+    let val = kv[2];
+    // Strip one layer of matching quotes.
+    if ((val.startsWith('"') && val.endsWith('"') && val.length >= 2) ||
+        (val.startsWith("'") && val.endsWith("'") && val.length >= 2)) {
+      try { val = val[0] === '"' ? JSON.parse(val) : val.slice(1, -1); } catch { val = val.slice(1, -1); }
+    }
+    meta[kv[1]] = val;
+  }
+  const body = text.slice(m[0].length);
+  return { meta, body };
+}
+
+function triggersFor(skill, parsed) {
+  // R08: honour author-declared triggers when the source frontmatter carries them.
+  parsed = parsed || parseSkill(skill.abs);
+  if (parsed.triggers) return parsed.triggers;
   const base = skill.name.replace(/-/g, ', ');
   const extra = {
     languages: 'write code, implement, coding',
@@ -91,10 +141,20 @@ function triggersFor(skill) {
 
 function yamlScalar(s) { return JSON.stringify(String(s)); }
 
-function frontmatter(name, description, triggers) {
+function frontmatter(name, description, triggers, extra) {
   const d = description.length > 300 ? description.slice(0, 297) + '…' : description;
-  return ['---', `name: ${yamlScalar(name)}`, `description: ${yamlScalar(d)}`,
-    `triggers: ${yamlScalar(triggers)}`, '---', '', ''].join('\n');
+  const lines = ['---', `name: ${yamlScalar(name)}`, `description: ${yamlScalar(d)}`,
+    `triggers: ${yamlScalar(triggers)}`];
+  // Carry client-specific metadata (any non-standard source key) through verbatim,
+  // in a stable (sorted) order so the emitted frontmatter is deterministic.
+  if (extra && typeof extra === 'object') {
+    for (const k of Object.keys(extra).sort()) {
+      const v = extra[k];
+      lines.push(`${k}: ${typeof v === 'string' ? yamlScalar(v) : JSON.stringify(v)}`);
+    }
+  }
+  lines.push('---', '', '');
+  return lines.join('\n');
 }
 
 // Flat <name>/SKILL.md layout: sibling skill X is at ../X/SKILL.md.
@@ -111,8 +171,12 @@ function rewriteRelativeLinks(body) {
 
 // The managed (new-format) body for a skill, without the trailing hash stamp.
 function managedContent(skill) {
-  const { desc, body } = parseSkill(skill.abs);
-  return frontmatter(skill.name, desc, triggersFor(skill)) + rewriteRelativeLinks(body);
+  const parsed = parseSkill(skill.abs);
+  // R08: author-set `name` wins; filename is only the fallback. Body is already
+  // frontmatter-free (parseSkill split it off), so we never emit a second block.
+  const name = parsed.name || skill.name;
+  return frontmatter(name, parsed.desc, triggersFor(skill, parsed), parsed.extraMeta)
+    + rewriteRelativeLinks(parsed.body);
 }
 
 // ---------- LEGACY output recognition (for migration) ----------
