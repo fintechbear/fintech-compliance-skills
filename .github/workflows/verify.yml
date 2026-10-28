@@ -9,6 +9,7 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch: {}
+  workflow_call: {}   # F: publish.yml calls this so a release WAITS for every gate below
 
 jobs:
   # Installer suite across OS + Node. 22/24 are the primary supported line; 18/20 are
@@ -153,3 +154,47 @@ jobs:
         run: node evals/adapters/codex.selftest.js
       - name: Config-isolation self-test (no global instruction leak)
         run: node evals/adapters/isolation.selftest.js
+
+  # NEGATIVE-GATE PROOF: a gate that can never fail is not a gate. This job deliberately BREAKS
+  # an input for each validator and asserts the validator REJECTS it (non-zero). The JOB passes
+  # only when every validator failed on its broken input — proving the gates have teeth. Nothing
+  # here is committed; every mutation is in a throwaway copy under the runner temp.
+  negative-gate-proof:
+    name: negative-gate-proof
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: A broken control catalog MUST fail validate-controls
+        run: |
+          set -e
+          work="$RUNNER_TEMP/negctl"; cp -r . "$work"; cd "$work"
+          node -e 'const f="controls/catalog.json";const c=JSON.parse(require("fs").readFileSync(f));c.controls[0].review_status="green-not-an-enum";require("fs").writeFileSync(f,JSON.stringify(c))'
+          if node controls/validate-controls.js; then echo "::error::validate-controls PASSED a broken catalog (gate has no teeth)"; exit 1; fi
+          echo "ok: broken catalog was rejected"
+      - name: A bad eval task MUST fail validate-tasks
+        run: |
+          set -e
+          work="$RUNNER_TEMP/negtask"; cp -r . "$work"; cd "$work"
+          printf '\n{"id":"BAD","category":"nope","group":"development","critical":true,"prompt":"x","grader":{"kind":"refusal"}}\n' >> evals/tasks.jsonl
+          if node evals/validate-tasks.js; then echo "::error::validate-tasks PASSED a bad task (gate has no teeth)"; exit 1; fi
+          echo "ok: bad eval task was rejected"
+      - name: A grader that false-PASSes MUST fail its self-test
+        run: |
+          set -e
+          work="$RUNNER_TEMP/neggrader"; cp -r . "$work"; cd "$work"
+          # break the grader: make code_invariant always PASS, then its self-test must fail
+          node -e 'const f="evals/grader.js";let s=require("fs").readFileSync(f,"utf8");s=s.replace("if (g.exec_probe) return runExecProbe(g.exec_probe, output);","if (g.exec_probe) return {status:\"PASS\",reason:\"BROKEN always-pass\"};");require("fs").writeFileSync(f,s)'
+          if node evals/grader.js; then echo "::error::grader self-test PASSED with an always-PASS code grader (gate has no teeth)"; exit 1; fi
+          echo "ok: broken grader was caught by its self-test"
+      - name: A doctor that ignores a deleted tree MUST fail the diagnose smoke test
+        run: |
+          set -e
+          work="$RUNNER_TEMP/negdiag"; cp -r . "$work"; cd "$work"
+          # break diagnose: never mark codex unhealthy, then the R07 smoke test must fail
+          node -e 'const f="installer/diagnose.js";let s=require("fs").readFileSync(f,"utf8");s=s.replace("const healthy = issues.length === 0 && blockPresent","const healthy = true || issues.length === 0 && blockPresent");require("fs").writeFileSync(f,s)'
+          if node installer/test-diagnose.js; then echo "::error::diagnose smoke PASSED with an always-healthy doctor (gate has no teeth)"; exit 1; fi
+          echo "ok: broken doctor was caught by the smoke test"
+

@@ -23,7 +23,15 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  # F: the FULL quality gate (installer matrix, real-PG .NET + TS harnesses, control catalog,
+  # schema/eval self-tests, negative-gate proof) must pass on THIS SAME ref before we publish.
+  # Calling the reusable Verify workflow makes publish WAIT for every one of its jobs — a red or
+  # missing DB/typecheck/schema gate blocks the release. The old gate ran only `verify` + `test`.
+  gate:
+    uses: ./.github/workflows/verify.yml
+
   publish:
+    needs: gate
     runs-on: ubuntu-latest
     permissions:
       contents: read
