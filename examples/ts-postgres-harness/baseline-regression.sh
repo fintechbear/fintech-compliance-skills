@@ -46,20 +46,20 @@ fail=0
 # Give each probe its OWN fresh database so one probe's tables/types can never collide with
 # the next (the pg_type 23505 seen when probes share one DB). We CREATE DATABASE fcs_probe_N
 # from a maintenance connection, then point the probe's PGCONN at it.
-ADMIN_PGCONN="$PGCONN"
+export ADMIN_PGCONN="$PGCONN"
 probe_no=0
 run_probe() {
   local name="$1"; shift
   probe_no=$((probe_no+1))
   local db="fcs_probe_${probe_no}"
   echo "### FAILING-FIRST probe: $name  (db=$db)"
-  # create a clean database from the maintenance connection
-  if ! node -e '
+  # create a clean database from the maintenance connection (ADMIN_PGCONN is exported above)
+  if ! ADMIN_PGCONN="$ADMIN_PGCONN" node -e '
       const pg=require("pg"); const db=process.argv[1];
       (async()=>{ const c=new pg.Client({connectionString:process.env.ADMIN_PGCONN}); await c.connect();
         await c.query("DROP DATABASE IF EXISTS "+db+" WITH (FORCE)");
         await c.query("CREATE DATABASE "+db);
-        await c.end(); })().catch(e=>{console.error("create db failed",e.message);process.exit(3);});' "$db"; then
+        await c.end(); })().catch(e=>{console.error("create db failed:",e&&e.message?e.message:String(e));process.exit(3);});' "$db"; then
     echo "  FAIL could not create $db for $name"; fail=1; return
   fi
   # a PGCONN that points at the fresh database (swap the trailing /dbname)
