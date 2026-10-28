@@ -57,5 +57,17 @@ expectInvalid({ ...goodProfile, jurisdictions: [] }, PROFILE, 'profile: jurisdic
 { const p = JSON.parse(JSON.stringify(goodProfile)); delete p.entity_role; expectInvalid(p, PROFILE, 'profile: missing required entity_role', "required property 'entity_role'"); }
 { const p = JSON.parse(JSON.stringify(goodProfile)); delete p.entity_role.kind; expectInvalid(p, PROFILE, 'profile: entity_role missing required kind', "required property 'kind'"); }
 
+// ---- R11 hardening: prototype names must NOT satisfy additionalProperties:false ----
+// `'constructor' in props` is true for any object via Object.prototype; an own-property check
+// is required or `constructor: 123` sails through. Same for toString/hasOwnProperty/__proto__.
+for (const proto of ['constructor', 'toString', 'hasOwnProperty', 'valueOf', 'isPrototypeOf']) {
+  expectInvalid({ ...goodControl, [proto]: 123 }, CONTROL, `control: prototype name '${proto}' is an additional property, not a schema field`, `additional property '${proto}'`);
+  expectInvalid({ ...goodProfile, [proto]: 123 }, PROFILE, `profile: prototype name '${proto}' is an additional property`, `additional property '${proto}'`);
+}
+// a schema that uses a keyword this validator does NOT enforce must be a hard failure,
+// never a silent pass (R11: unknown keyword = clear boundary).
+expectInvalid({ x: 1 }, { type: 'object', properties: { x: { type: 'integer', multipleOf: 2 } } }, 'schema: unsupported keyword multipleOf is refused, not ignored', "unsupported schema keyword 'multipleOf'");
+expectInvalid({ x: 1 }, { type: 'object', not: { type: 'string' } }, 'schema: unsupported keyword not is refused', "unsupported schema keyword 'not'");
+
 if (failed) { console.error(`\n${failed} of ${n} schema self-test checks FAILED.`); process.exit(1); }
 console.log(`\nschema validator self-test: ${n} checks passed`);
