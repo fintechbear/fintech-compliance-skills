@@ -82,6 +82,8 @@ jobs:
           node-version: '22'
       - name: Validate control catalog, profiles and citations
         run: node controls/validate-controls.js
+      - name: JSON Schema validator adversarial self-test (R11 — rejects bad input)
+        run: node controls/validate-controls.selftest.js
       - name: Citation migration is idempotent (no drift)
         run: node controls/migrate-refusal-citations.js --check
       - name: Install self-check (source side — FCS ids resolve, no legacy citations)

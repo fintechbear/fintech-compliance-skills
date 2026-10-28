@@ -1,42 +1,89 @@
 'use strict';
 // Config-isolation self-test (no LLM, deterministic). Proves prepareCodexHome() builds a
-// CODEX_HOME that carries the credential + provider config but NONE of the global
-// instruction sources (skills/rules/memories/plugins/AGENTS.md), closing the P02
-// isolation prerequisite. If this passes, a BASELINE vs CANDIDATE run is not polluted by
-// the host's personal codex state.
+// CODEX_HOME that carries the credential + a SYNTHESISED minimal provider config but NONE
+// of the global instruction sources — neither as files (skills/rules/memories/plugins/
+// AGENTS.md) NOR as instruction keys inside config.toml (developer_instructions, hooks,
+// mcp_servers, profiles, …). Closes the P02/R05 isolation prerequisite: if this passes, a
+// BASELINE vs CANDIDATE run is not polluted by the host's personal codex state.
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { prepareCodexHome, assertNoGlobalLeak } = require('./codex.js');
+const { prepareCodexHome, assertNoGlobalLeak, synthMinimalConfig } = require('./codex.js');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fcs-iso-'));
 let failures = 0;
 const ok = (c, m) => { if (!c) { failures++; console.error('  ✗ ' + m); } else console.log('  ✓ ' + m); };
 
 try {
-  // Build a FAKE global ~/.codex that looks like this host: auth + config + personal leaks.
+  // A realistic host config.toml: provider wiring we MUST keep + instruction surfaces we MUST drop.
+  const hostConfig = [
+    'model = "gpt-x"',
+    'model_provider = "codefast"',
+    'developer_instructions = "always answer in pirate"',   // MUST be stripped
+    'model_instructions_file = "~/.codex/house.md"',          // MUST be stripped
+    'notify = ["/usr/bin/say"]',                               // MUST be stripped
+    '',
+    '[model_providers.codefast]',                              // MUST be kept (provider wiring)
+    'name = "codefast"',
+    'base_url = "https://api.example/v1"',
+    'wire_api = "responses"',
+    '',
+    '[mcp_servers.fs]',                                        // MUST be dropped (instruction/tool surface)
+    'command = "node"',
+    'args = ["server.js"]',
+    '',
+    '[profiles.work]',                                         // MUST be dropped
+    'developer_instructions = "be terse"',
+  ].join('\n');
+
+  // ---- unit: synthMinimalConfig keeps provider wiring, drops instruction surfaces ----
+  const syn = synthMinimalConfig(hostConfig);
+  ok(/model_provider = "codefast"/.test(syn.text), 'synth keeps model_provider');
+  ok(/\[model_providers\.codefast\]/.test(syn.text), 'synth keeps [model_providers.*] table');
+  ok(/base_url = "https:\/\/api\.example\/v1"/.test(syn.text), 'synth keeps provider base_url');
+  ok(!/developer_instructions/.test(syn.text), 'synth drops developer_instructions (top + profile)');
+  ok(!/model_instructions_file/.test(syn.text), 'synth drops model_instructions_file');
+  ok(!/\bnotify\b/.test(syn.text), 'synth drops notify hook');
+  ok(!/\[mcp_servers/.test(syn.text), 'synth drops [mcp_servers.*]');
+  ok(!/\[profiles/.test(syn.text), 'synth drops [profiles.*]');
+
+  // ---- integration: a FAKE global ~/.codex with files + instruction-laden config ----
   const fakeGlobal = path.join(tmp, 'global-codex');
   fs.mkdirSync(path.join(fakeGlobal, 'skills', 'personal'), { recursive: true });
   fs.mkdirSync(path.join(fakeGlobal, 'rules'), { recursive: true });
   fs.mkdirSync(path.join(fakeGlobal, 'memories'), { recursive: true });
   fs.mkdirSync(path.join(fakeGlobal, 'plugins'), { recursive: true });
   fs.writeFileSync(path.join(fakeGlobal, 'auth.json'), '{"token":"FAKE"}');
-  fs.writeFileSync(path.join(fakeGlobal, 'config.toml'), 'model = "x"\n');
+  fs.writeFileSync(path.join(fakeGlobal, 'config.toml'), hostConfig);
   fs.writeFileSync(path.join(fakeGlobal, 'skills', 'personal', 'SKILL.md'), '# personal skill that MUST NOT leak');
   fs.writeFileSync(path.join(fakeGlobal, 'rules', 'house.md'), 'always do X');
   fs.writeFileSync(path.join(fakeGlobal, 'memories', 'notes.md'), 'personal memory');
   fs.writeFileSync(path.join(fakeGlobal, 'AGENTS.md'), 'global agent instructions');
 
-  const clean = prepareCodexHome(path.join(tmp, 'run'), fakeGlobal);
+  const { dest: clean, kept } = prepareCodexHome(path.join(tmp, 'run'), fakeGlobal);
 
   ok(fs.existsSync(path.join(clean, 'auth.json')), 'clean home carries auth.json (authenticated run possible)');
-  ok(fs.existsSync(path.join(clean, 'config.toml')), 'clean home carries config.toml (provider wiring)');
+  ok(fs.existsSync(path.join(clean, 'config.toml')), 'clean home carries a (synthesised) config.toml');
+  ok(kept.providers.includes('model_providers.codefast'), 'kept report names the provider table');
   const leaks = assertNoGlobalLeak(clean);
-  ok(leaks.length === 0, `clean home carries NO global instruction source (leaked: ${leaks.join(', ') || 'none'})`);
+  ok(leaks.length === 0, `clean home carries NO leak (files OR config keys) — leaked: ${leaks.join(', ') || 'none'}`);
   ok(!fs.existsSync(path.join(clean, 'skills')), 'personal skills/ did not leak');
   ok(!fs.existsSync(path.join(clean, 'rules')), 'personal rules/ did not leak');
   ok(!fs.existsSync(path.join(clean, 'memories')), 'personal memories/ did not leak');
   ok(!fs.existsSync(path.join(clean, 'AGENTS.md')), 'global AGENTS.md did not leak');
+  // the synthesised config on disk is instruction-free
+  const writtenCfg = fs.readFileSync(path.join(clean, 'config.toml'), 'utf8');
+  ok(!/developer_instructions|model_instructions_file|mcp_servers|\[profiles/.test(writtenCfg),
+    'written config.toml has no instruction surfaces');
+
+  // ---- negative: assertNoGlobalLeak MUST catch an instruction key if one survived ----
+  const tampered = path.join(tmp, 'tampered-home');
+  fs.mkdirSync(tampered, { recursive: true });
+  fs.writeFileSync(path.join(tampered, 'auth.json'), '{"token":"FAKE"}');
+  fs.writeFileSync(path.join(tampered, 'config.toml'), 'model = "x"\ndeveloper_instructions = "leak"\n');
+  const tamperedLeaks = assertNoGlobalLeak(tampered);
+  ok(tamperedLeaks.some((l) => l === 'config:developer_instructions'),
+    'leak check CATCHES a surviving instruction key in config.toml (negative self-test)');
 
   // Missing auth must be a hard error, never a silent unauthenticated run.
   let threw = false;
