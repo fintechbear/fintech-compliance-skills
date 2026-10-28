@@ -93,30 +93,63 @@ function parseSkill(abs) {
   return { title, desc, body, name, triggers, extraMeta, hadFrontmatter: !!fm.meta };
 }
 
-// Minimal, dependency-free YAML-frontmatter reader for the SUBSET our skill files use:
-// a leading `---` block of `key: value` lines where value is a (optionally quoted) scalar.
-// It does NOT attempt full YAML — nested structures are kept as their raw string so we
-// round-trip rather than lose them. Returns { meta, body }; meta is null when the file
-// does not open with a `---` fence.
+// Dependency-free YAML-frontmatter reader for the SUBSET our skill files use: a leading `---`
+// block of `key: value` lines where a value is a (optionally quoted) scalar, a NESTED MAPPING
+// (indented `key: value` lines under a bare `key:`), or a block SEQUENCE (indented `- item`
+// lines). It is not full YAML, but it round-trips the shapes authors actually use (e.g.
+// `metadata:` with a nested `version:`), so nested keys are no longer silently dropped (R08).
+// Returns { meta, body }; meta is null when the file does not open with a `---` fence.
 function parseFrontmatter(text) {
-  // Must START with a frontmatter fence (allow a UTF-8 BOM). A `---` later in the body
-  // (e.g. a horizontal rule) is NOT frontmatter.
   const m = text.match(/^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?/);
   if (!m) return { meta: null, body: text };
-  const meta = {};
-  for (const rawLine of m[1].split(/\r?\n/)) {
-    const line = rawLine.replace(/\s+$/, '');
-    if (!line.trim() || /^\s*#/.test(line)) continue;        // blank or comment
-    const kv = line.match(/^([A-Za-z0-9_-]+):\s?(.*)$/);
-    if (!kv) continue;                                        // not a simple scalar line — skip (round-tripped only as raw if needed)
-    let val = kv[2];
-    // Strip one layer of matching quotes.
+  const scalar = (raw) => {
+    let val = raw;
     if ((val.startsWith('"') && val.endsWith('"') && val.length >= 2) ||
         (val.startsWith("'") && val.endsWith("'") && val.length >= 2)) {
-      try { val = val[0] === '"' ? JSON.parse(val) : val.slice(1, -1); } catch { val = val.slice(1, -1); }
+      try { return val[0] === '"' ? JSON.parse(val) : val.slice(1, -1); } catch { return val.slice(1, -1); }
     }
-    meta[kv[1]] = val;
+    if (val === 'true') return true;
+    if (val === 'false') return false;
+    if (/^-?\d+$/.test(val)) return Number(val);
+    return val;
+  };
+  // tokenize into (indent, text) ignoring blank/comment lines
+  const toks = [];
+  for (const rawLine of m[1].split(/\r?\n/)) {
+    const noTrail = rawLine.replace(/\s+$/, '');
+    if (!noTrail.trim() || /^\s*#/.test(noTrail)) continue;
+    const indent = noTrail.length - noTrail.replace(/^\s+/, '').length;
+    toks.push({ indent, text: noTrail.trim() });
   }
+  // recursive-descent over the indented token list
+  let i = 0;
+  function parseBlock(minIndent) {
+    // decide mapping vs sequence by the first token at this indent
+    if (i < toks.length && toks[i].text.startsWith('- ')) {
+      const arr = [];
+      const ind = toks[i].indent;
+      while (i < toks.length && toks[i].indent === ind && toks[i].text.startsWith('- ')) {
+        arr.push(scalar(toks[i].text.slice(2).trim())); i++;
+      }
+      return arr;
+    }
+    const obj = {};
+    while (i < toks.length && toks[i].indent >= minIndent) {
+      const { indent, text: t } = toks[i];
+      if (indent !== minIndent) break; // belongs to a deeper block handled by recursion
+      const kv = t.match(/^([A-Za-z0-9_.-]+):\s?(.*)$/);
+      if (!kv) { i++; continue; }
+      const key = kv[1], rest = kv[2];
+      if (rest !== '') { obj[key] = scalar(rest); i++; }
+      else {
+        i++;
+        if (i < toks.length && toks[i].indent > indent) obj[key] = parseBlock(toks[i].indent);
+        else obj[key] = ''; // bare key with nothing under it
+      }
+    }
+    return obj;
+  }
+  const meta = toks.length ? parseBlock(toks[0].indent) : {};
   const body = text.slice(m[0].length);
   return { meta, body };
 }
@@ -139,18 +172,44 @@ function triggersFor(skill, parsed) {
 
 // ---------- YAML-safe emit ----------
 
-function yamlScalar(s) { return JSON.stringify(String(s)); }
+function yamlScalar(s) {
+  if (typeof s === 'number' || typeof s === 'boolean') return String(s);
+  return JSON.stringify(String(s));
+}
+
+// Serialise a nested value (mapping/array/scalar) to indented YAML lines (subset that
+// round-trips what parseFrontmatter reads). Keeps nested keys like metadata.version (R08).
+function yamlEmit(key, val, indent) {
+  const pad = ' '.repeat(indent);
+  if (Array.isArray(val)) {
+    if (val.length === 0) return [`${pad}${key}: []`];
+    return [`${pad}${key}:`, ...val.map((v) => `${pad}  - ${yamlScalar(v)}`)];
+  }
+  if (val && typeof val === 'object') {
+    const lines = [`${pad}${key}:`];
+    for (const k of Object.keys(val)) lines.push(...yamlEmit(k, val[k], indent + 2));
+    return lines;
+  }
+  return [`${pad}${key}: ${yamlScalar(val)}`];
+}
+
+// The maximum description length we will emit. A valid description UP TO this is preserved
+// verbatim (no silent truncation — R08); a longer one is an EXPLICIT error so the author fixes
+// the source rather than shipping a quietly cut description. 1024 comfortably covers a real
+// multi-sentence description (incl. the 400-char case) while bounding the frontmatter.
+const MAX_DESCRIPTION = 1024;
 
 function frontmatter(name, description, triggers, extra) {
-  const d = description.length > 300 ? description.slice(0, 297) + '…' : description;
-  const lines = ['---', `name: ${yamlScalar(name)}`, `description: ${yamlScalar(d)}`,
+  if (typeof description === 'string' && description.length > MAX_DESCRIPTION) {
+    throw new Error(`skill "${name}": description is ${description.length} chars, over the ${MAX_DESCRIPTION}-char limit — shorten it in the source rather than shipping a silently truncated one`);
+  }
+  const lines = ['---', `name: ${yamlScalar(name)}`, `description: ${yamlScalar(description)}`,
     `triggers: ${yamlScalar(triggers)}`];
-  // Carry client-specific metadata (any non-standard source key) through verbatim,
-  // in a stable (sorted) order so the emitted frontmatter is deterministic.
+  // Carry client-specific metadata (any non-standard source key) through verbatim as real
+  // YAML, in a stable (sorted) order so the emitted frontmatter is deterministic.
   if (extra && typeof extra === 'object') {
     for (const k of Object.keys(extra).sort()) {
-      const v = extra[k];
-      lines.push(`${k}: ${typeof v === 'string' ? yamlScalar(v) : JSON.stringify(v)}`);
+      lines.push(...yamlEmit(k, extra[k], 0));
     }
   }
   lines.push('---', '', '');
@@ -706,5 +765,6 @@ if (require.main === module) {
 module.exports = {
   resolveBase, classify, isLegacyOutput, isLegacyCodexFile, managedContent, mergeCodexBlock, rewriteRelativeLinks,
   listSkillFiles, installCodex, installSkillDir, LEGACY_FILE_HASHES,
+  parseFrontmatter, frontmatter, parseSkill, MAX_DESCRIPTION,
   BLOCK_START, BLOCK_END, LEGACY_CODEX_MARKER, LEGACY_CODEX_HEADING, CODEX_ROOT, CODEX_MANIFEST,
 };

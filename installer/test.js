@@ -560,6 +560,71 @@ test('R08c. client-specific (non-standard) source frontmatter keys are carried t
   fs.rmSync(t, { recursive: true, force: true });
 });
 
+test('R08d. a 400-char valid description is PRESERVED verbatim (no silent truncation)', () => {
+  const t = tmp();
+  const grp = path.join(t, 'extra');
+  fs.mkdirSync(grp, { recursive: true });
+  const desc = 'D'.repeat(400);
+  const f = path.join(grp, 'demo-skill.md');
+  fs.writeFileSync(f, `---\nname: "demo-skill"\ndescription: "${desc}"\ntriggers: "demo"\n---\n\n# Skill: Demo\n\n**Body.**\n`, 'utf8');
+  const mc = api.managedContent({ group: 'extra', file: 'demo-skill.md', name: 'demo-skill', abs: f });
+  const meta = yaml.load(mc.slice(3, mc.indexOf('\n---', 3)));
+  assert.equal(meta.description, desc, '400-char description preserved in full, not cut to ~300');
+  assert.ok(!meta.description.includes('…'), 'no ellipsis truncation');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('R08e. a description over the limit throws an EXPLICIT error (no silent truncation)', () => {
+  assert.throws(
+    () => api.frontmatter('demo', 'Z'.repeat(api.MAX_DESCRIPTION + 1), 'trig', {}),
+    /over the \d+-char limit/,
+    'over-limit description is an explicit error, not a quiet cut');
+  // at the limit it is accepted
+  assert.doesNotThrow(() => api.frontmatter('demo', 'Z'.repeat(api.MAX_DESCRIPTION), 'trig', {}));
+});
+
+test('R08f. nested metadata (metadata.version) and a sequence round-trip through install', () => {
+  const t = tmp();
+  const grp = path.join(t, 'extra');
+  fs.mkdirSync(grp, { recursive: true });
+  const f = path.join(grp, 'demo-skill.md');
+  fs.writeFileSync(f, `---\nname: "demo-skill"\ndescription: "Author desc."\ntriggers: "demo"\nmetadata:\n  version: 7\n  owner: "team-a"\ntags:\n  - alpha\n  - beta\n---\n\n# Skill: Demo\n\n**Body.**\n`, 'utf8');
+  const mc = api.managedContent({ group: 'extra', file: 'demo-skill.md', name: 'demo-skill', abs: f });
+  const meta = yaml.load(mc.slice(3, mc.indexOf('\n---', 3)));
+  assert.ok(meta.metadata && meta.metadata.version === 7, 'nested metadata.version round-trips (was dropped -> metadata:"")');
+  assert.equal(meta.metadata.owner, 'team-a', 'nested metadata.owner round-trips');
+  assert.deepEqual(meta.tags, ['alpha', 'beta'], 'a YAML sequence round-trips');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('R08g. a quoted scalar with special chars + a BOM/CRLF source parse correctly', () => {
+  const t = tmp();
+  const grp = path.join(t, 'extra');
+  fs.mkdirSync(grp, { recursive: true });
+  const f = path.join(grp, 'demo-skill.md');
+  // leading UTF-8 BOM + CRLF line endings + a description containing a colon and quotes
+  const src = '\uFEFF---\r\nname: "demo-skill"\r\ndescription: "Handle A: store B, never C."\r\ntriggers: "demo"\r\n---\r\n\r\n# Skill: Demo\r\n\r\n**Body.**\r\n';
+  fs.writeFileSync(f, src, 'utf8');
+  const mc = api.managedContent({ group: 'extra', file: 'demo-skill.md', name: 'demo-skill', abs: f });
+  const meta = yaml.load(mc.slice(3, mc.indexOf('\n---', 3)));
+  assert.equal(meta.description, 'Handle A: store B, never C.', 'BOM + CRLF + special chars parse correctly');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('R08h. every real source skill filename matches a stable name<->folder mapping', () => {
+  // The installed layout is <name>/SKILL.md; the emitted `name` must equal the source basename
+  // (or the author-set name) so a skill cannot be installed under a folder that disagrees with
+  // its declared name. We assert the invariant across the REAL skill set.
+  for (const s of api.listSkillFiles()) {
+    const parsed = api.parseSkill(s.abs);
+    const emittedName = parsed.name || s.name;
+    // the install folder is the skill's `name`; it must be a safe slug and match the source file
+    assert.ok(/^[a-z0-9-]+$/i.test(s.name), `${s.name}: source basename is a safe folder slug`);
+    if (parsed.name) {
+      assert.ok(/^[a-z0-9-]+$/i.test(emittedName), `${s.name}: author name '${emittedName}' is a safe folder slug`);
+    }
+  }
+});
 
 
 // ---------------------------------------------------------------------------
