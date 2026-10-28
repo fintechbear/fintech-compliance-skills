@@ -70,6 +70,49 @@ jobs:
         working-directory: examples/dotnet-postgres-harness
         run: bash test-run-sh.sh
 
+  # Real PostgreSQL + TypeScript rule harness (transfer/ledger/refund/retention/webhook).
+  # Uses a loopback-only service container; no mocks. Proves, against a real DB:
+  #   - clean `npm ci` (no `npm install` fallback that would mask a bad lockfile),
+  #   - a REAL `tsc --noEmit` typecheck (tsx running is NOT a typecheck),
+  #   - FAILING-FIRST: the reviewed-base (654018e) sources fail the new acceptance tests,
+  #   - then the fixed harness passes every module.
+  ts-harness:
+    name: ts-postgres-harness (ubuntu, real PG)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: fcs
+          POSTGRES_PASSWORD: fcs
+          POSTGRES_DB: fcs
+        ports:
+          - 127.0.0.1:55443:5432
+        options: >-
+          --health-cmd "pg_isready -U fcs -d fcs"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      PGCONN: "postgresql://fcs:fcs@127.0.0.1:55443/fcs"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need history so the baseline-regression can read 654018e
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install deps (clean npm ci — NO install fallback)
+        working-directory: examples/ts-postgres-harness
+        run: npm ci
+      - name: Real typecheck (tsc --noEmit — not tsx)
+        working-directory: examples/ts-postgres-harness
+        run: npx tsc --noEmit
+      - name: FAILING-FIRST — reviewed base (654018e) must FAIL the new acceptance tests
+        working-directory: examples/ts-postgres-harness
+        run: bash baseline-regression.sh 654018e847e5f91801d5dc0bdf80af7ba6be2517
+      - name: Fixed harness passes every module against real PostgreSQL
+        working-directory: examples/ts-postgres-harness
+        run: npm start --silent
+
   # Control catalog + profile integrity: schema shape, no unknown/legacy citations,
   # no broken skill_refs/test_refs, profiles explicitly declare entity role. Zero deps.
   controls:
