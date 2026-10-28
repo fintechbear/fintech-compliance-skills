@@ -39,8 +39,12 @@ password with MD5, logging a CVV, skipping the AML check).
 - **Not legal or compliance certification.** Following these skills does not make you
   "PCI compliant" or "GDPR compliant" — that is an organisational process. They help
   you avoid the common, well-known engineering mistakes.
-- **Not a scanner or linter.** It does not read your existing codebase and flag
-  issues. It guides code as it is written.
+- **Not an automatic scanner or linter.** It does not silently read your whole
+  codebase in the background and flag issues. It guides code as it is written — and,
+  when you explicitly ask, the `fintech-pr-review` skill reviews a specific diff/file
+  and reports per-finding (control id, file:line, trigger, evidence) without inventing
+  a false-precision score. That on-request review is not a substitute for a scanner or
+  a human reviewer.
 - **Not a guarantee.** An AI agent can still make mistakes. These skills reduce the
   obvious, dangerous ones; they do not remove the need for human review.
 
@@ -109,7 +113,40 @@ The installer is safe to re-run and to upgrade an older install:
 - **Atomic** — writes are staged and swapped in; a failed update leaves the previous
   working install intact.
 
-Flags: `--tool claude|kiro|kiro-crew|codex`, `--scope`, `--target <dir>`, `--home <dir>` (testing), `--force`, `--help`.
+Flags: `--tool claude|kiro|kiro-crew|codex`, `--scope`, `--target <dir>`, `--home <dir>` (testing), `--force`, `--dry-run`, `--json`, `--help`.
+
+### Pin to an immutable version
+
+`npx github:fintechbear/fintech-compliance-skills` tracks the default branch. For a
+reproducible install, pin to a tag (a release) instead of a moving branch:
+
+```bash
+npx github:fintechbear/fintech-compliance-skills#v1.0.0 --tool claude --target .
+```
+
+Installed skills embed **pinned source URLs** (`…/blob/v<version>/…`) for any
+`controls/…` or `examples/…` reference, so those links resolve from wherever the skill
+ends up — the repo tree is not copied into your agent's skill directory.
+
+### Commands (inspect, preview, remove)
+
+```bash
+# list every skill with its controls + verified/needs-review/test evidence
+npx github:fintechbear/fintech-compliance-skills list --json
+
+# explain why a profile selects which controls/skills (obligations are DECLARED, not inferred)
+npx github:fintechbear/fintech-compliance-skills explain --profile tr-psp-postgres
+
+# preview what an install would change — writes NOTHING
+npx github:fintechbear/fintech-compliance-skills diff --tool claude --target .
+npx github:fintechbear/fintech-compliance-skills --tool claude --target . --dry-run
+
+# remove only the unchanged managed content we installed (your edits/unknown files are kept)
+npx github:fintechbear/fintech-compliance-skills uninstall --tool claude --target . --dry-run
+```
+
+An unknown flag or command exits non-zero and never starts an install; every command
+takes `--json` for machine output and documents its exit codes via `--help`.
 
 After installing: **Claude Code** — restart or `/reload`; **Kiro** — loads on the
 next session; **Codex** — reads `AGENTS.md` automatically at session start.
@@ -167,13 +204,38 @@ Every skill follows the same shape, so they are easy to read and extend:
 
 | Folder | What's inside |
 |--------|---------------|
-| `skills/core/` | Baseline rules for all financial code (money as integers, idempotency, audit trail, least privilege) |
+| `skills/core/` | Baseline rules for all financial code (money as integers, idempotency, audit trail, least privilege) **plus six task-skills**: `fintech-transfer`, `fintech-ledger-reconciliation`, `fintech-refund-cancel`, `fintech-provider-webhook`, `fintech-retention-erasure`, `fintech-pr-review` |
 | `skills/refusal/` | The hard limits — when and how the agent must say no |
 | `skills/global/` | International frameworks: PCI-DSS (card data), ISO 27001 / SOC 2 (controls), AML / KYC / sanctions |
 | `skills/regional/` | Jurisdiction rules: EU (GDPR, PSD2, DORA), US (SOX, GLBA, CCPA), Turkey (KVKK, BDDK, MASAK), UK (FCA, UK GDPR) |
 | `skills/languages/` | Per-language: Java, Kotlin, Python, C#/.NET, Go, JS/TS, Rust, Scala, COBOL, PL/SQL |
 | `skills/databases/` | Per-database: PostgreSQL, Oracle, SQL Server, MySQL/MariaDB, MongoDB, Redis, Db2 |
-| `examples/` | Good vs. bad code examples |
+| `controls/` | The machine-readable control catalog (`catalog.json`), JSON Schemas, and example org profiles |
+| `examples/` | Good vs. bad examples, plus **runnable references**: a .NET + PostgreSQL harness and a TypeScript + PostgreSQL harness |
+
+### Evidence & support status
+
+Controls are not asserted on trust. Each citation was checked against its **primary
+source**, and the engineering controls are exercised by a **runnable harness on a real
+PostgreSQL 16 database in CI** (no mocks). Support levels:
+
+| Control(s) | Source (verified) | Executable evidence |
+|---|---|---|
+| FCS-PAN-001 / SAD-001 / LOG-001 / TLS-001 | PCI DSS **v4.0.1** (Req 3.5.1 / 3.3.1 / 3.4.1+8 / 4.2.1) | refusal rules; graded eval (refusal tasks) |
+| FCS-SECRET-001 | OWASP Password Storage Cheat Sheet (Argon2id 19 MiB/t=2/p=1) | refusal/eval |
+| FCS-CRYPTO-001 | NIST **SP 800-131A Rev. 2** + FIPS 180-4/197, SP 800-38 | refusal/eval |
+| FCS-MONEY-001 | ISO **4217:2015** minor units | `examples/ts-postgres-harness/bank.ts` + .NET harness |
+| FCS-AUDIT-001 / IDEMP-001 / AUTHZ-001 | ISO 27001:2022 A.8.15 + SOX §§302/404; project engineering standard | `bank.ts` + `Bank.cs` (real PG, both stacks) |
+| FCS-LEDGER-001 / RECON-001 | project engineering standard (double-entry) | `examples/ts-postgres-harness/ledger.ts` (BigInt-exact) |
+| FCS-OUTBOX-001 / WEBHOOK-001 / OUTCOME-001 | Stripe webhooks + error-handling docs | `examples/ts-postgres-harness/webhook.ts` |
+| FCS-REFUND-001 / REFUNDTERM-001 | project engineering standard | `examples/ts-postgres-harness/refund.ts` |
+| FCS-ERASE-001 / RETAIN-001 | GDPR Art 17(3)(b) vs EU AMLD (≥5y) / Turkey Law 5549 & KVKK | `examples/ts-postgres-harness/retention.ts` |
+| FCS-AML-001 / EVASION-001 | FATF + national AML law (jurisdiction-specific) | refusal rules; graded eval |
+| FCS-PRREVIEW-001 / SECRET-002 | project engineering standard | qualitative (review skill) |
+
+Law controls are **verified as jurisdiction-specific** — none asserts a single
+universal statute. The provider harnesses use a clearly-labelled **test double**, not a
+live bank/Stripe sandbox. Run the catalog check yourself: `node controls/validate-controls.js`.
 
 Each language and database file covers four things in depth:
 
@@ -209,16 +271,48 @@ See [`skills/refusal/refusal-policy.md`](skills/refusal/refusal-policy.md) for t
 ## Contributing
 
 New jurisdictions, languages, databases and frameworks are welcome. Keep the file
-shape above, cite the regulation or standard by name, and **never weaken a red
-line**. See [`CONTRIBUTING.md`](CONTRIBUTING.md).
+shape above, cite the regulation or standard **by name and clause** (and set
+`verified: true` on a `source_ref` only after checking the primary text — reachability
+of a URL is not verification), and **never weaken a red line**. Add a new fixture for a
+new output format rather than regenerating historical evidence. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md).
+
+## Security & maintenance
+
+- **Reporting:** report a suspected rule gap or a dangerous-code false-negative by
+  opening a GitHub issue (or a private security advisory for anything exploitable).
+  A control change must come with a primary-source citation and, for an engineering
+  control, a harness test that exercises it.
+- **Dependencies:** the runtime is **dependency-free** (Node built-ins only); the only
+  third-party packages are dev/test tools, pinned to exact versions
+  (`installer/package.json`, `examples/*/package-lock.json`). `npm ci` installs the
+  locked set; CI runs it clean with no `npm install` fallback. Review `npm audit` on
+  the dev tools and bump via a PR that keeps the lockfile and CI green.
+- **Evidence:** `node controls/validate-controls.js` (catalog + schema + citations),
+  `node installer/diagnose.js` (install integrity), and the CI harnesses (real
+  PostgreSQL) are the maintenance gates. The publish workflow will not release unless
+  all of them pass on the same commit.
 
 ## Publishing to npm (maintainers)
 
-The package can also be published to npm (so the command drops the `github:`
-prefix). Publishing is automated by GitHub Actions (`.github/workflows/publish.yml`):
-push a `v*` tag and it publishes. Pick one auth method once — OIDC trusted publishing
-(no stored secrets) or an `NPM_TOKEN` repo secret. Until then, the
-`npx github:…` command above works for everyone, today.
+The package can also be published to npm (so the command drops the `github:` prefix).
+Publishing is automated by GitHub Actions (`.github/workflows/publish.yml`): push a
+`v*` tag (matching `package.json` version) and it runs the **full Verify gate** — the
+installer matrix, the real-PostgreSQL .NET **and** TypeScript harnesses, the control
+catalog + schema self-tests, the eval self-tests and the negative-gate proof — and only
+then packs once and publishes **that same tarball**.
+
+Auth (pick one, configured out-of-band on the npm account — not done in this repo):
+
+- **OIDC Trusted Publishing** (recommended, no stored secret): requires the package to
+  exist on npm once and a Trusted Publisher configured for this repo+workflow on
+  npmjs.com, and a recent npm (the workflow runs Node 24 / npm ≥ 11.5.1 and asserts it
+  at runtime for `--provenance`).
+- **`NPM_TOKEN`** repo secret (granular automation token) if you prefer a token.
+
+Until an account is configured, the `npx github:…` command above works for everyone
+today. The workflow's `npm pack`/`--dry-run` is **not** proof of publish rights — the
+Trusted Publisher / token setup is a separate manual step.
 
 ## License
 
