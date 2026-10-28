@@ -204,11 +204,13 @@ jobs:
       - name: Record the exact subject and approved test scope
         env:
           FCS_JOB_RESULTS: ${{ toJSON(needs) }}
+          FCS_SOURCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
           node - <<'JS'
           const fs=require('fs'),cp=require('child_process');
           fs.writeFileSync('ci-evidence.json',JSON.stringify({
             subject_sha:process.env.GITHUB_SHA,
+            source_head_sha:process.env.FCS_SOURCE_HEAD,
             source_tree:cp.execFileSync('git',['rev-parse','HEAD^{tree}'],{encoding:'utf8'}).trim(),
             run_id:process.env.GITHUB_RUN_ID,
             jobs:JSON.parse(process.env.FCS_JOB_RESULTS),

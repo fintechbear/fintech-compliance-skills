@@ -81,7 +81,7 @@ test('TOML connection wiring preserves quoted headers and hashes while dropping 
   a.equal(result.model_providers['provider.with.dot'].base_url, 'https://example.invalid/#fragment');
   a.equal(result.developer_instructions, undefined);
   a.equal(result.sandbox_mode, undefined);
-  a.deepEqual(result.permissions.fcs_eval.filesystem, {':minimal':'read','/tmp/only-eval-sandbox':'read'});
+  a.deepEqual(result.permissions.fcs_eval.filesystem, {':minimal':'read',[path.resolve('/tmp/only-eval-sandbox')]:'read'});
   a.equal(result.permissions.fcs_eval.network.enabled, false);
 });
 test('no original TOML still writes an explicit restrictive profile (no real CLI call)', () => {
