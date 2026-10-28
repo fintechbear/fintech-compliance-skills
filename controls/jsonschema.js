@@ -3,7 +3,7 @@
 // Supports exactly the keywords the FCS catalog/profile schemas use:
 //   type (incl. ["string","null"]), required, properties, additionalProperties:false,
 //   enum, pattern, minLength, minItems, items, $ref ("#/definitions/..."), default (ignored).
-// It is intentionally small and strict: an unsupported keyword is ignored, but the keywords
+// It is intentionally small and strict: an unsupported keyword is rejected, but the keywords
 // above are ENFORCED (unlike the old ad-hoc checks). Returns an array of error strings
 // ([] = valid). Paths are JSON-pointer-ish for readable messages.
 //
@@ -27,7 +27,8 @@ function resolveRef(ref, root) {
   if (!ref.startsWith('#/')) throw new Error(`unsupported $ref: ${ref}`);
   let node = root;
   for (const seg of ref.slice(2).split('/')) {
-    node = node[seg.replace(/~1/g, '/').replace(/~0/g, '~')];
+    const key = seg.replace(/~1/g, '/').replace(/~0/g, '~');
+    node = node && Object.prototype.hasOwnProperty.call(node, key) ? node[key] : undefined;
     if (node === undefined) throw new Error(`$ref not found: ${ref}`);
   }
   return node;
@@ -59,6 +60,8 @@ function assertSupportedSchema(schema, where, errors) {
 }
 
 function validateNode(data, schema, root, pathStr, errors) {
+  if (schema === true) return;
+  if (schema === false) { errors.push(`${pathStr}: false schema rejects every value`); return; }
   if (schema.$ref) { validateNode(data, resolveRef(schema.$ref, root), root, pathStr, errors); return; }
   // R11: refuse to pass a schema that leans on a keyword we do not enforce.
   assertSupportedSchema(schema, `schema@${pathStr || '#'}`, errors);
@@ -83,7 +86,7 @@ function validateNode(data, schema, root, pathStr, errors) {
   // array facets
   if (Array.isArray(data)) {
     if (schema.minItems !== undefined && data.length < schema.minItems) errors.push(`${pathStr}: fewer than minItems ${schema.minItems}`);
-    if (schema.items) data.forEach((item, i) => validateNode(item, schema.items, root, `${pathStr}[${i}]`, errors));
+    if (schema.items !== undefined) data.forEach((item, i) => validateNode(item, schema.items, root, `${pathStr}[${i}]`, errors));
   }
   // object facets — all property tests use OWN-property checks so a prototype name
   // (constructor, toString, hasOwnProperty, __proto__) can never masquerade as a schema field.
@@ -103,10 +106,25 @@ function validateNode(data, schema, root, pathStr, errors) {
   }
 }
 
-// Validate `data` against `schema`. Returns an array of error messages ([] = valid).
+// Preflight the entire schema, including optional/unvisited branches, so unsupported
+// constraints never disappear just because today's data omitted the affected property.
+function checkSchema(schema, where, errors, seen = new Set()) {
+  if (typeof schema === 'boolean') return;
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) { errors.push(`${where}: invalid schema`); return; }
+  if (seen.has(schema)) return;
+  seen.add(schema);
+  assertSupportedSchema(schema, where, errors);
+  for (const key of ['properties', 'definitions']) {
+    for (const [name, sub] of Object.entries(schema[key] || {})) checkSchema(sub, `${where}/${key}/${name}`, errors, seen);
+  }
+  if (schema.items !== undefined) checkSchema(schema.items, `${where}/items`, errors, seen);
+}
 function validate(data, schema) {
   const errors = [];
-  validateNode(data, schema, schema, '', errors);
+  checkSchema(schema, '#', errors);
+  if (errors.length) return errors;
+  try { validateNode(data, schema, schema, '', errors); }
+  catch (e) { errors.push(`invalid/unsupported schema: ${e.message}`); }
   return errors;
 }
 

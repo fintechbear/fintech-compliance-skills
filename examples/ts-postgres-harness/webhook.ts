@@ -22,17 +22,17 @@ const { Pool } = pg;
 const PGCONN = process.env.PGCONN ?? 'postgresql://fcs:fcs@127.0.0.1:55443/fcs';
 const pool = new Pool({ connectionString: PGCONN, max: 8 });
 
-type OutState = 'not_started' | 'pending_unknown' | 'confirmed_success' | 'confirmed_failure';
+type OutState = 'not_started' | 'pending_unknown' | 'confirmed_success' | 'confirmed_failure' | 'conflict';
 
 async function initSchema() {
   const c = await pool.connect();
   try {
     await c.query('BEGIN');
-    await c.query('DROP TABLE IF EXISTS webhook_effects, webhook_inbox, outbox CASCADE');
+    await c.query('DROP TABLE IF EXISTS webhook_conflicts, webhook_effects, webhook_inbox, outbox CASCADE');
     await c.query(`CREATE TABLE outbox(
       tenant_id text NOT NULL, provider text NOT NULL, business_id text NOT NULL,
       idem_key text NOT NULL, state text NOT NULL,
-      PRIMARY KEY (tenant_id, provider, idem_key))`);
+      PRIMARY KEY (tenant_id, provider, idem_key), UNIQUE (tenant_id, provider, business_id))`);
     // Stage 1 — durable INBOX: raw transport dedup on (provider,event_id). Carries the
     // TRUSTED binding (tenant/business) resolved from the registered provider, plus a
     // logical_key so two transport events for one logical business event can be collapsed.
@@ -48,6 +48,7 @@ async function initSchema() {
       tenant_id text NOT NULL, logical_key text NOT NULL, outcome text NOT NULL,
       applied_at timestamptz NOT NULL DEFAULT now(),
       PRIMARY KEY (tenant_id, logical_key))`);
+    await c.query(`CREATE TABLE webhook_conflicts(provider text NOT NULL, event_id text NOT NULL, observed text NOT NULL, incoming text NOT NULL, PRIMARY KEY(provider,event_id))`);
     await c.query('COMMIT');
   } catch (e) { await c.query('ROLLBACK'); throw e; } finally { c.release(); }
 }
@@ -57,13 +58,14 @@ async function initSchema() {
 // an old key stays valid through its overlap window, an expired key is removed.
 class ProviderDouble {
   private charges = new Map<string, string>(); // idem_key -> chargeId (dedup)
-  failNext: 'timeout' | 'ok' = 'ok';
+  failNext: 'timeout' | 'timeout_after_effect' | 'ok' = 'ok';
   // registered providers: provider -> { signingKeys[], tenant, kind-of events it may emit }
   private keys: string[] = ['whsec_v2', 'whsec_v1']; // newest first; v1 is the rotated-out-but-valid key
   charge(idemKey: string): { chargeId: string } {
     if (this.failNext === 'timeout') { this.failNext = 'ok'; throw new Error('provider timeout (unknown outcome)'); }
     let id = this.charges.get(idemKey);
     if (!id) { id = 'ch_' + crypto.randomBytes(6).toString('hex'); this.charges.set(idemKey, id); }
+    if (this.failNext === 'timeout_after_effect') { this.failNext = 'ok'; throw new Error('response lost after provider effect'); }
     return { chargeId: id };
   }
   chargeCount(): number { return this.charges.size; }
@@ -87,20 +89,44 @@ async function startCharge(tenant: string, businessId: string, idemKey: string):
   const c = await pool.connect();
   try {
     await c.query('BEGIN');
-    await c.query(
-      `INSERT INTO outbox(tenant_id,provider,business_id,idem_key,state) VALUES($1,'double',$2,$3,'not_started')
-       ON CONFLICT (tenant_id,provider,idem_key) DO NOTHING`, [tenant, businessId, idemKey]);
+    await c.query(`INSERT INTO outbox(tenant_id,provider,business_id,idem_key,state)
+      VALUES($1,'double',$2,$3,'pending_unknown') ON CONFLICT DO NOTHING`, [tenant, businessId, idemKey]);
+    const row = await c.query(`SELECT business_id,state FROM outbox WHERE tenant_id=$1 AND provider='double' AND idem_key=$2 FOR UPDATE`, [tenant, idemKey]);
+    // Same key + changed payload is a conflict. A new key cannot bypass an existing business intent.
+    if (!row.rowCount || row.rows[0].business_id !== businessId) { await c.query('ROLLBACK'); return 'conflict'; }
+    const state = row.rows[0].state as OutState;
     await c.query('COMMIT');
-  } finally { c.release(); }
+    if (state === 'confirmed_success' || state === 'confirmed_failure') return state;
+  } catch (e) { await c.query('ROLLBACK'); throw e; } finally { c.release(); }
+  const scopedKey = crypto.createHash('sha256').update(JSON.stringify(['charge', 'double', tenant, idemKey])).digest('hex');
+  try { provider.charge(scopedKey); }
+  catch { return 'pending_unknown'; }
+  const done = await pool.connect();
   try {
-    provider.charge(idemKey); // reuse SAME key on any retry
-    await pool.query(`UPDATE outbox SET state='confirmed_success' WHERE tenant_id=$1 AND provider='double' AND idem_key=$2`, [tenant, idemKey]);
-    return 'confirmed_success';
-  } catch {
-    // FCS-OUTCOME-001: unknown, NOT failure. Leave pending; do not blind-retry with a new key.
-    await pool.query(`UPDATE outbox SET state='pending_unknown' WHERE tenant_id=$1 AND provider='double' AND idem_key=$2 AND state='not_started'`, [tenant, idemKey]);
-    return 'pending_unknown';
-  }
+    await done.query('BEGIN');
+    const result = await applyOutcome(done, tenant, 'double', businessId, 'succeeded', `response:${JSON.stringify([tenant,idemKey])}`);
+    await done.query('COMMIT');
+    return result.conflict ? 'conflict' : result.outcome === 'succeeded' ? 'confirmed_success' : 'confirmed_failure';
+  } catch (e) { await done.query('ROLLBACK'); throw e; } finally { done.release(); }
+}
+
+// Shared evidence boundary: synchronous provider responses and webhook consumers use
+// the SAME business projection and lock. Contradictory terminal evidence is retained.
+async function applyOutcome(c: pg.PoolClient, tenant: string, providerName: string, businessId: string,
+  incoming: 'succeeded' | 'failed' | 'pending', evidenceId: string) {
+  const logicalKey = `${providerName}:${businessId}`;
+  const effect = await c.query(`INSERT INTO webhook_effects(tenant_id,logical_key,outcome)
+    VALUES($1,$2,$3) ON CONFLICT (tenant_id,logical_key) DO UPDATE
+    SET outcome=CASE WHEN webhook_effects.outcome='pending' THEN EXCLUDED.outcome ELSE webhook_effects.outcome END,
+        applied_at=CASE WHEN webhook_effects.outcome='pending' THEN now() ELSE webhook_effects.applied_at END
+    RETURNING outcome, (xmax=0) AS inserted`, [tenant, logicalKey, incoming]);
+  const observed = effect.rows[0].outcome as 'succeeded' | 'failed' | 'pending';
+  const conflict = isTerminal(observed) && isTerminal(incoming) && observed !== incoming;
+  if (conflict) await c.query(`INSERT INTO webhook_conflicts(provider,event_id,observed,incoming) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
+    [providerName, evidenceId, observed, incoming]);
+  if (isTerminal(observed)) await c.query(`UPDATE outbox SET state=$4 WHERE tenant_id=$1 AND provider=$2 AND business_id=$3 AND state IN ('not_started','pending_unknown')`,
+    [tenant, providerName, businessId, observed === 'succeeded' ? 'confirmed_success' : 'confirmed_failure']);
+  return { inserted: effect.rows[0].inserted as boolean, outcome: observed, conflict };
 }
 
 type WebhookResult =
@@ -151,7 +177,7 @@ async function receiveWebhook(providerName: string, rawBody: string, ts: number,
   // 4) TRUSTED binding: tenant comes from the REGISTRY for this provider, NOT from ev.tenant_id.
   const tenant = reg.tenant;
   // logical_key collapses retried/duplicate LOGICAL events: provider + business + kind.
-  const logicalKey = `${providerName}:${ev.business_id}:${ev.kind}`;
+  const logicalKey = `${providerName}:${ev.business_id}`;
 
   // 5) durable inbox insert (transport dedup on provider+event_id). A DB fault here is infra_error.
   try {
@@ -186,23 +212,13 @@ async function consumeInbox(): Promise<{ applied: number; collapsed: number }> {
       await c.query('BEGIN');
       // lock the next unconsumed row; SKIP LOCKED lets parallel workers each take a distinct row
       const row = await c.query(
-        `SELECT provider,event_id,logical_key,tenant_id,kind FROM webhook_inbox
+        `SELECT provider,event_id,logical_key,business_id,tenant_id,kind FROM webhook_inbox
          WHERE consumed=false ORDER BY received_at FOR UPDATE SKIP LOCKED LIMIT 1`);
       if (!row.rowCount) { await c.query('ROLLBACK'); c.release(); break; }
       const { logical_key, tenant_id, kind } = row.rows[0] as any;
       const incoming = outcomeOfKind(kind);
-      const existing = await c.query(`SELECT outcome FROM webhook_effects WHERE tenant_id=$1 AND logical_key=$2 FOR UPDATE`, [tenant_id, logical_key]);
-      if (!existing.rowCount) {
-        await c.query(`INSERT INTO webhook_effects(tenant_id,logical_key,outcome) VALUES($1,$2,$3)`, [tenant_id, logical_key, incoming]);
-        applied++;
-      } else {
-        const cur = existing.rows[0].outcome as string;
-        // terminal wins: upgrade pending->terminal; never downgrade terminal->pending; keep first terminal on conflict
-        if (!isTerminal(cur) && isTerminal(incoming)) {
-          await c.query(`UPDATE webhook_effects SET outcome=$3, applied_at=now() WHERE tenant_id=$1 AND logical_key=$2`, [tenant_id, logical_key, incoming]);
-        }
-        collapsed++; // this transport event mapped onto an already-known logical effect
-      }
+      const effect = await applyOutcome(c, tenant_id, row.rows[0].provider, row.rows[0].business_id, incoming, row.rows[0].event_id);
+      if (effect.inserted) applied++; else collapsed++;
       await c.query(`UPDATE webhook_inbox SET consumed=true WHERE provider=$1 AND event_id=$2`, [row.rows[0].provider, row.rows[0].event_id]);
       await c.query('COMMIT');
     } catch (e) {
@@ -333,7 +349,7 @@ async function main() {
     const raw = ev('ce1', 'bizC', 'charge.succeeded');
     await receiveWebhook('double', raw, ts, provider.sign(raw, ts), ts);
     const { applied } = await consumeInbox();
-    return applied >= 1 && (await effectOutcome('T1', 'double:bizC:charge.succeeded')) === 'succeeded' && (await effectCount('double:bizC:charge.succeeded')) === 1;
+    return (await effectOutcome('T1', 'double:bizC')) === 'succeeded' && (await effectCount('double:bizC')) === 1;
   });
   await check('consumer: SAME logical event under TWO different transport ids applies ONCE', async () => {
     const a = JSON.stringify({ event_id: 'ce2a', business_id: 'bizD', kind: 'charge.succeeded' });
@@ -342,20 +358,19 @@ async function main() {
     await receiveWebhook('double', b, ts, provider.sign(b, ts), ts);
     await consumeInbox();
     // two inbox rows accepted, but ONE business effect
-    const inbox = await pool.query(`SELECT count(*)::int n FROM webhook_inbox WHERE logical_key='double:bizD:charge.succeeded'`);
-    return inbox.rows[0].n === 2 && (await effectCount('double:bizD:charge.succeeded')) === 1;
+    const inbox = await pool.query(`SELECT count(*)::int n FROM webhook_inbox WHERE logical_key='double:bizD'`);
+    return inbox.rows[0].n === 2 && (await effectCount('double:bizD')) === 1;
   });
   await check('consumer: out-of-order terminal then pending => terminal wins (no downgrade)', async () => {
-    // deliver succeeded FIRST, then a late pending for the same business+? — different kind so it is a different
-    // logical event; to test downgrade we use the SAME logical key by re-delivering pending as the same kind path:
+    // Deliver a real pending event after success for the SAME business projection.
     const succ = JSON.stringify({ event_id: 'ce3s', business_id: 'bizE', kind: 'charge.succeeded' });
     await receiveWebhook('double', succ, ts, provider.sign(succ, ts), ts);
     await consumeInbox();
-    // now a late PENDING arrives for the same logical key (same provider+business+kind) under a new id
-    const late = JSON.stringify({ event_id: 'ce3p', business_id: 'bizE', kind: 'charge.succeeded' });
+    // A late pending must not create a second business state or downgrade success.
+    const late = JSON.stringify({ event_id: 'ce3p', business_id: 'bizE', kind: 'charge.pending' });
     await receiveWebhook('double', late, ts, provider.sign(late, ts), ts);
     await consumeInbox();
-    return (await effectOutcome('T1', 'double:bizE:charge.succeeded')) === 'succeeded';
+    return (await effectOutcome('T1', 'double:bizE')) === 'succeeded';
   });
   await check('consumer: crash mid-drain leaves unconsumed rows; re-run recovers them', async () => {
     const a = JSON.stringify({ event_id: 'ce4a', business_id: 'bizF', kind: 'charge.succeeded' });
@@ -365,25 +380,62 @@ async function main() {
     // simulate a crash: consume exactly ONE row then stop (manual single-step)
     const c = await pool.connect();
     await c.query('BEGIN');
-    const row = await c.query(`SELECT provider,event_id,logical_key,tenant_id,kind FROM webhook_inbox WHERE consumed=false AND logical_key IN ('double:bizF:charge.succeeded','double:bizG:charge.succeeded') ORDER BY received_at FOR UPDATE SKIP LOCKED LIMIT 1`);
+    const row = await c.query(`SELECT provider,event_id,logical_key,business_id,tenant_id,kind FROM webhook_inbox WHERE consumed=false AND logical_key IN ('double:bizF','double:bizG') ORDER BY received_at FOR UPDATE SKIP LOCKED LIMIT 1`);
     const one = row.rows[0] as any;
     await c.query(`INSERT INTO webhook_effects(tenant_id,logical_key,outcome) VALUES($1,$2,'succeeded') ON CONFLICT DO NOTHING`, [one.tenant_id, one.logical_key]);
     await c.query(`UPDATE webhook_inbox SET consumed=true WHERE provider=$1 AND event_id=$2`, [one.provider, one.event_id]);
     await c.query('COMMIT'); c.release();
     // the other row is still unconsumed; a normal drain must pick it up (recovery)
     await consumeInbox();
-    const left = await pool.query(`SELECT count(*)::int n FROM webhook_inbox WHERE consumed=false AND logical_key IN ('double:bizF:charge.succeeded','double:bizG:charge.succeeded')`);
-    return left.rows[0].n === 0 && (await effectCount('double:bizF:charge.succeeded')) === 1 && (await effectCount('double:bizG:charge.succeeded')) === 1;
+    const left = await pool.query(`SELECT count(*)::int n FROM webhook_inbox WHERE consumed=false AND logical_key IN ('double:bizF','double:bizG')`);
+    return left.rows[0].n === 0 && (await effectCount('double:bizF')) === 1 && (await effectCount('double:bizG')) === 1;
   });
   await check('consumer: an UnknownOutcome is never turned into a blind re-charge under a new key', async () => {
     // outbound timeout left pending_unknown under ik-unk; a "retry" MUST reuse the key, not mint a new one.
-    provider.failNext = 'timeout';
+    provider.failNext = 'timeout_after_effect';
     const first = await startCharge('T1', 'bizH', 'ik-unk');      // times out -> pending_unknown, no charge yet
     const st = await startCharge('T1', 'bizH', 'ik-unk');         // retry SAME key -> one charge, success
     const again = await startCharge('T1', 'bizH', 'ik-unk');      // retry again -> provider dedups, still one charge
     return first === 'pending_unknown' && st === 'confirmed_success' && again === 'confirmed_success';
   });
 
+  await check('outbound: same client key under different tenants produces two provider effects', async () => {
+    const before = provider.chargeCount();
+    const a = await startCharge('T1', 'scope-biz-1', 'shared-client-key');
+    const b = await startCharge('T2', 'scope-biz-2', 'shared-client-key');
+    return a === 'confirmed_success' && b === 'confirmed_success' && provider.chargeCount() === before + 2;
+  });
+  await check('outbound: changed business payload OR new key for existing business is conflict', async () => {
+    await startCharge('T1', 'bind-biz', 'bind-key');
+    const before = provider.chargeCount();
+    return await startCharge('T1', 'other-biz', 'bind-key') === 'conflict'
+      && await startCharge('T1', 'bind-biz', 'different-key') === 'conflict' && provider.chargeCount() === before;
+  });
+  await check('consumer: pending to success then contradictory failure preserves success and records conflict', async () => {
+    for (const [id, kind] of [['ord-p','charge.pending'],['ord-s','charge.succeeded'],['ord-f','charge.failed']]) {
+      const raw = ev(id, 'order-biz', kind);
+      await receiveWebhook('double', raw, ts, provider.sign(raw, ts), ts);
+      await consumeInbox();
+    }
+    const conflict = await pool.query(`SELECT count(*)::int n FROM webhook_conflicts WHERE event_id='ord-f'`);
+    return await effectOutcome('T1', 'double:order-biz') === 'succeeded' && await effectCount('double:order-biz') === 1 && conflict.rows[0].n === 1;
+  });
+  await check('consumer: parallel workers collapse duplicate business events without unique-violation', async () => {
+    for (let n=0;n<12;n++) {
+      const raw = ev('parallel-'+n, 'parallel-biz');
+      await receiveWebhook('double', raw, ts, provider.sign(raw, ts), ts);
+    }
+    await Promise.all([consumeInbox(),consumeInbox(),consumeInbox()]);
+    return await effectCount('double:parallel-biz') === 1;
+  });
+  await check('consumer: provider-response success then failed webhook records a contradiction', async () => {
+    await startCharge('T1', 'response-conflict', 'response-conflict-key');
+    const raw = ev('response-conflict-event', 'response-conflict', 'charge.failed');
+    await receiveWebhook('double', raw, ts, provider.sign(raw, ts), ts);
+    await consumeInbox();
+    const conflict = await pool.query(`SELECT count(*)::int n FROM webhook_conflicts WHERE event_id='response-conflict-event'`);
+    return await effectOutcome('T1','double:response-conflict') === 'succeeded' && conflict.rows[0].n === 1;
+  });
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail) console.log('failures:\n' + failures.map((f) => '  - ' + f).join('\n'));
   pool.end().catch(() => {});

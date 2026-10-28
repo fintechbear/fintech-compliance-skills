@@ -4,7 +4,7 @@
 // of the global instruction sources — neither as files (skills/rules/memories/plugins/
 // AGENTS.md) NOR as instruction keys inside config.toml (developer_instructions, hooks,
 // mcp_servers, profiles, …). Closes the P02/R05 isolation prerequisite: if this passes, a
-// BASELINE vs CANDIDATE run is not polluted by the host's personal codex state.
+// generated config excludes personal instructions. Runtime agent isolation is NOT tested here.
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
@@ -91,8 +91,8 @@ try {
   ok(/base_url = "https:\/\/api\.example\/v1"/.test(synC.text), 'R05: provider base_url under a commented section is kept');
   ok(/name = "p"/.test(synC.text) && !/comment after a value/.test(synC.text), 'R05: inline comment stripped from a value line, value kept');
   ok(!/danger-full-access/.test(synC.text), 'R05: global permissive sandbox_mode is NOT inherited');
-  ok(synC.text.includes('sandbox_mode = "read-only"'), 'R05: eval writes its OWN explicit sandbox_mode (read-only)');
-  ok(synC.text.includes('approval_policy = "never"') && synC.permissions.approval_policy === '"never"', 'R05: eval declares its OWN approval_policy explicitly (not inherited)');
+  ok(synC.text.includes('default_permissions = "fcs_eval"') && !synC.text.includes('sandbox_mode ='), 'R05: eval declares a filesystem permission profile, not broad read-only');
+  ok(synC.text.includes('approval_policy = "never"') && synC.permissions.approval_policy === 'never', 'R05: eval declares its OWN approval_policy explicitly (not inherited)');
 
   // ---- negative: assertNoGlobalLeak MUST catch an instruction key if one survived ----
   const tampered = path.join(tmp, 'tampered-home');

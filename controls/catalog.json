@@ -1,6 +1,6 @@
 {
   "catalog_version": "0.1.0",
-  "generated_note": "Project-local controls for Fintech Compliance Skills. FCS ids are LOCAL identifiers, NOT official regulation article numbers. 'verified' means the cited article AND its scope were confirmed against the official source; most legal citations here are needs_review pending primary-source confirmation.",
+  "generated_note": "Project-local controls; FCS ids are not official article numbers. Source verification does not certify implementations or constitute legal advice. See docs/development/RELEASE_CLOSURE.md for current evidence and CLI exclusions.",
   "id_policy": "Ids are permanent. A retired id is never reused for a new meaning; a superseding control sets 'replaces'. Semantic changes bump the catalog_version and are tracked in git history.",
   "controls": [
     {
@@ -67,7 +67,7 @@
     },
     {
       "id": "FCS-SECRET-001",
-      "statement": "Never store passwords or secrets in plaintext or under reversible encryption. Hash passwords with a slow, salted algorithm (bcrypt, scrypt, Argon2).",
+      "statement": "Never store credentials or secrets in plaintext. Passwords used for local authentication require a slow salted password hash, not reversible encryption. API keys, private keys and other secrets that must be retrieved for use belong in a secrets manager/KMS/HSM with encryption, least privilege, auditing and rotation.",
       "applicability": "Any credential or secret at rest.",
       "control_type": "refusal_red_line",
       "source_refs": [
@@ -75,6 +75,12 @@
           "kind": "engineering_recommendation",
           "label": "OWASP Password Storage Cheat Sheet — Argon2id (19 MiB/t=2/p=1 min), scrypt, bcrypt (wf>=10, 72-byte limit), PBKDF2-HMAC-SHA256 (>=600k)",
           "url": "https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html",
+          "verified": true
+        },
+        {
+          "kind": "engineering_recommendation",
+          "label": "OWASP Secrets Management Cheat Sheet, sections 4.2 and 7 (encryption of retrievable secrets)",
+          "url": "https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html",
           "verified": true
         }
       ],
@@ -87,7 +93,7 @@
         "skills/refusal/refusal-policy.md"
       ],
       "test_refs": [],
-      "limitations": "Parameters track OWASP current guidance (Argon2id 19 MiB/t=2/p=1 minimum; bcrypt input limit stated in BYTES). Update if OWASP revises the minima."
+      "limitations": "Password validation and retrievable service secrets have different storage requirements. Do not apply the password hashing rule to API/private keys needed by the application."
     },
     {
       "id": "FCS-LOG-001",
@@ -163,14 +169,20 @@
     },
     {
       "id": "FCS-AML-001",
-      "statement": "Never skip, disable, or bypass KYC / AML / sanctions screening where it is required. A hit is warn + audit + hold, never a silent pass; record the screening decision and case id.",
+      "statement": "Never skip or bypass required KYC, AML or sanctions controls. Record screening matches and case decisions. Distinguish candidate matches/false positives, PEP risk classification and confirmed sanctions matches; apply the applicable jurisdiction and approved risk policy. PEP status alone does not impose a universal automatic freeze or denial.",
       "applicability": "Onboarding and in-scope transfers (cross-party / threshold).",
       "control_type": "refusal_red_line",
       "source_refs": [
         {
-          "kind": "law",
+          "kind": "standard",
           "label": "AML/CFT obligations (jurisdiction-specific): FATF 40 Recs; US BSA (31 USC 5311+)/OFAC; EU AMLD/AMLA; Turkey Law 5549 (MASAK)",
           "url": "https://www.fatf-gafi.org/en/topics/fatf-recommendations.html",
+          "verified": true
+        },
+        {
+          "kind": "standard",
+          "label": "FATF Guidance: Politically Exposed Persons (Recommendations 12 and 22), preventive risk-based measures, not a finding of criminal activity",
+          "url": "https://www.fatf-gafi.org/en/publications/Fatfrecommendations/Peps-r12-r22.html",
           "verified": true
         }
       ],
@@ -184,7 +196,7 @@
         "skills/global/aml-kyc.md"
       ],
       "test_refs": [],
-      "limitations": "Jurisdiction-specific: there is no single universal AML statute. Screening requirements and list sources differ by jurisdiction (OFAC/BSA, EU AMLD, Turkey Law 5549). A hit is warn+audit+hold per the applicable regime, never silent-pass."
+      "limitations": "FATF recommendations are standards, not a universal statute. Holds/freezes must be tied to the applicable sanctions rule or explicit institution policy; a screening candidate or PEP classification is not automatically a confirmed sanctions match."
     },
     {
       "id": "FCS-AUDIT-001",

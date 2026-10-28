@@ -1,8 +1,8 @@
 name: Verify
 
-# Quality gate: runs on every push and PR. Proves the installer still produces
-# resolvable, parseable, idempotent, migration-safe output, and that the .NET +
-# PostgreSQL rule harness passes against a real database, before merge or release.
+# Release gate: non-CLI module/control regressions and real PostgreSQL harnesses.
+# Installer/doctor/live-agent CLI tests are explicitly excluded by the owner; a green
+# run MUST NOT be described as CLI compatibility or real-agent evaluation proof.
 
 on:
   push:
@@ -12,10 +12,17 @@ on:
   workflow_call: {}   # F: publish.yml calls this so a release WAITS for every gate below
 
 jobs:
-  # Installer suite across OS + Node. 22/24 are the primary supported line; 18/20 are
-  # kept this round as legacy-compatibility legs.
-  installer:
-    name: installer (${{ matrix.os }}, node ${{ matrix.node }})
+  # User-approved release scope (2026-10-28): CLI tests are NOT RUN. This is a
+  # module regression matrix; importing parser/config helpers does not invoke any CLI.
+  cli-tests-excluded:
+    name: CLI tests — NOT RUN (explicit release exclusion)
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Installer, doctor and live agent CLI tests are excluded."
+
+  modules:
+    name: modules (${{ matrix.os }}, node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -27,15 +34,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      - name: Install dev dependencies (npm ci)
-        run: npm ci
-      - name: Structural checks
-        run: npm run verify
-      - name: Test suite (real YAML, migration, atomicity, packed artifact)
-        run: npm test
-      - name: Diagnose smoke (install then self-check reports current, exit 0)
-        run: node installer/test-diagnose.js
-      - name: Package contents sanity
+      - run: npm ci
+      - name: Grader behavioural regressions (WASM; no agent CLI)
+        run: node evals/grader.js
+      - name: Release module regressions (no CLI invocation)
+        run: node --test evals/release.selftest.js
+      - name: Package inventory only (NOT an installed CLI smoke test)
         run: npm pack --dry-run
 
   # Real PostgreSQL + .NET rule harness. Uses a service container (loopback-only) and the
@@ -130,8 +134,6 @@ jobs:
         run: node controls/validate-controls.selftest.js
       - name: Citation migration is idempotent (no drift)
         run: node controls/migrate-refusal-citations.js --check
-      - name: Install self-check (source side — FCS ids resolve, no legacy citations)
-        run: node installer/diagnose.js --home "$RUNNER_TEMP/no-install" --target "$RUNNER_TEMP/no-install"
 
   # Eval harness integrity: the deterministic grader, the codex adapter states, and the
   # config-isolation builder. All three are LLM-FREE self-tests — they prove the eval would
@@ -146,12 +148,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - run: npm ci
       - name: Deterministic grader self-test
         run: node evals/grader.js
       - name: Eval tasks validate against task.schema.json (R11/D4)
         run: node evals/validate-tasks.js
-      - name: Codex adapter state self-test (no LLM)
-        run: node evals/adapters/codex.selftest.js
       - name: Config-isolation self-test (no global instruction leak)
         run: node evals/adapters/isolation.selftest.js
 
@@ -167,6 +168,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
+      - run: npm ci
       - name: A broken control catalog MUST fail validate-controls
         run: |
           set -e
@@ -189,12 +191,33 @@ jobs:
           node -e 'const f="evals/grader.js";let s=require("fs").readFileSync(f,"utf8");s=s.replace("if (g.exec_probe) return runExecProbe(g.exec_probe, output);","if (g.exec_probe) return {status:\"PASS\",reason:\"BROKEN always-pass\"};");require("fs").writeFileSync(f,s)'
           if node evals/grader.js; then echo "::error::grader self-test PASSED with an always-PASS code grader (gate has no teeth)"; exit 1; fi
           echo "ok: broken grader was caught by its self-test"
-      - name: A doctor that ignores a deleted tree MUST fail the diagnose smoke test
-        run: |
-          set -e
-          work="$RUNNER_TEMP/negdiag"; cp -r . "$work"; cd "$work"
-          # break diagnose: never mark codex unhealthy, then the R07 smoke test must fail
-          node -e 'const f="installer/diagnose.js";let s=require("fs").readFileSync(f,"utf8");s=s.replace("const healthy = issues.length === 0 && blockPresent","const healthy = true || issues.length === 0 && blockPresent");require("fs").writeFileSync(f,s)'
-          if node installer/test-diagnose.js; then echo "::error::diagnose smoke PASSED with an always-healthy doctor (gate has no teeth)"; exit 1; fi
-          echo "ok: broken doctor was caught by the smoke test"
 
+  evidence:
+    name: release-evidence (CLI explicitly NOT RUN)
+    needs: [modules, harness, ts-harness, controls, evals, negative-gate-proof]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Record the exact subject and approved test scope
+        env:
+          FCS_JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          node - <<'JS'
+          const fs=require('fs'),cp=require('child_process');
+          fs.writeFileSync('ci-evidence.json',JSON.stringify({
+            subject_sha:process.env.GITHUB_SHA,
+            source_tree:cp.execFileSync('git',['rev-parse','HEAD^{tree}'],{encoding:'utf8'}).trim(),
+            run_id:process.env.GITHUB_RUN_ID,
+            jobs:JSON.parse(process.env.FCS_JOB_RESULTS),
+            cli_tests:{status:'NOT_RUN',reason:'explicit owner release exclusion'},
+            live_agent_evaluation:'NOT_RUN', runtime_agent_isolation:'UNVERIFIED',
+          },null,2));
+          JS
+          echo "CLI tests: NOT RUN (explicit owner exclusion). Module and real-PG checks passed." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence
+          path: ci-evidence.json

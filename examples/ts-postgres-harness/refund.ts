@@ -70,11 +70,12 @@ function providerKey(tenant: string, paymentId: string, idemKey: string): string
 // --- provider TEST DOUBLE (not a real sandbox). Dedups on the SCOPED key. ---
 class ProviderDouble {
   private refunds = new Map<string, string>(); // scopedKey -> providerRefundId (dedup)
-  failNext: 'timeout' | 'ok' = 'ok';
+  failNext: 'timeout' | 'timeout_after_effect' | 'ok' = 'ok';
   refund(scopedKey: string): { refundId: string } {
     if (this.failNext === 'timeout') { this.failNext = 'ok'; throw new Error('provider timeout (unknown outcome)'); }
     let id = this.refunds.get(scopedKey);
     if (!id) { id = 're_' + crypto.randomBytes(6).toString('hex'); this.refunds.set(scopedKey, id); }
+    if (this.failNext === 'timeout_after_effect') { this.failNext = 'ok'; throw new Error('response lost after provider effect'); }
     return { refundId: id };
   }
   callCount(): number { return this.refunds.size; }
@@ -93,7 +94,9 @@ type RefundResult = 'confirmed' | 'rejected_exceeds_cap' | 'rejected_lifecycle' 
   | 'replayed' | 'conflict' | 'pending_unknown';
 
 async function refund(paymentId: string, tenant: string, idemKey: string, amountMinorIn: number | bigint, currency = 'USD'): Promise<RefundResult> {
+  if (typeof amountMinorIn === 'number' && !Number.isSafeInteger(amountMinorIn)) throw new Error('pass exact bigint for unsafe or fractional minor units');
   const amountMinor = BigInt(amountMinorIn);
+  if (amountMinor > 2n ** 63n - 1n) throw new Error('refund amount exceeds int64');
   const fp = fingerprint(tenant, paymentId, amountMinor, currency);
   const pkey = providerKey(tenant, paymentId, idemKey);
   const c = await pool.connect();
@@ -138,22 +141,30 @@ async function refund(paymentId: string, tenant: string, idemKey: string, amount
       [tenant, paymentId, idemKey, BigInt(amountMinorIn).toString()]);
     return 'pending_unknown';
   }
-  await pool.query(`UPDATE refunds SET state='confirmed' WHERE tenant_id=$1 AND payment_id=$2 AND idem_key=$3`, [tenant, paymentId, idemKey]);
-  await pool.query(`INSERT INTO refund_audit(tenant_id,payment_id,idem_key,event,amount_minor) VALUES($1,$2,$3,'confirmed',$4)`,
-    [tenant, paymentId, idemKey, BigInt(amountMinorIn).toString()]);
+  await confirmRefund(tenant, paymentId, idemKey, 'confirmed');
   return 'confirmed';
 }
 
-// Recovery: resolve any pending_unknown refund by REUSING its stored scoped key — never a new one.
+// The local state transition and its audit commit together, after the external call.
+// Concurrent recoveries race this conditional UPDATE; only one may append the transition.
+async function confirmRefund(tenant: string, paymentId: string, idemKey: string, event: string): Promise<boolean> {
+  const c = await pool.connect();
+  try {
+    await c.query('BEGIN');
+    const changed = await c.query(`UPDATE refunds SET state='confirmed' WHERE tenant_id=$1 AND payment_id=$2 AND idem_key=$3 AND state='pending_unknown' RETURNING amount_minor`, [tenant, paymentId, idemKey]);
+    if (changed.rowCount) await c.query(`INSERT INTO refund_audit(tenant_id,payment_id,idem_key,event,amount_minor) VALUES($1,$2,$3,$4,$5)`,
+      [tenant, paymentId, idemKey, event, changed.rows[0].amount_minor]);
+    await c.query('COMMIT');
+    return changed.rowCount === 1;
+  } catch (e) { await c.query('ROLLBACK'); throw e; } finally { c.release(); }
+}
+
 async function resolvePending(tenant: string, paymentId: string, idemKey: string): Promise<RefundResult> {
   const r = await pool.query(`SELECT provider_key, state FROM refunds WHERE tenant_id=$1 AND payment_id=$2 AND idem_key=$3`, [tenant, paymentId, idemKey]);
   if (!r.rowCount) return 'rejected_scope';
   if (r.rows[0].state === 'confirmed') return 'replayed';
   try { provider.refund(r.rows[0].provider_key); } catch { return 'pending_unknown'; }
-  await pool.query(`UPDATE refunds SET state='confirmed' WHERE tenant_id=$1 AND payment_id=$2 AND idem_key=$3`, [tenant, paymentId, idemKey]);
-  await pool.query(`INSERT INTO refund_audit(tenant_id,payment_id,idem_key,event,amount_minor) VALUES($1,$2,$3,'confirmed_on_recovery',(SELECT amount_minor FROM refunds WHERE tenant_id=$1 AND payment_id=$2 AND idem_key=$3))`,
-    [tenant, paymentId, idemKey]);
-  return 'confirmed';
+  return await confirmRefund(tenant, paymentId, idemKey, 'confirmed_on_recovery') ? 'confirmed' : 'replayed';
 }
 
 async function refundedTotal(paymentId: string, tenant: string): Promise<bigint> {
@@ -233,7 +244,7 @@ async function main() {
   });
   await check('refund: crash after reserve (pending) recovers by REUSING the scoped key', async () => {
     await seedPayment('p-crash', 'T1', 1000);
-    provider.failNext = 'timeout'; // provider call "lost" -> pending
+    provider.failNext = 'timeout_after_effect'; // actual effect, then response lost
     const r = await refund('p-crash', 'T1', 'rk-crash', 200);
     const rec = await resolvePending('T1', 'p-crash', 'rk-crash'); // recovery reuses stored scoped key
     const afterOne = provider.callCount();
@@ -271,6 +282,30 @@ async function main() {
     return (await auditCount('T1', 'p10', 'rk-audit')) >= 2; // reserved + confirmed
   });
 
+  await check('refund: audit write failure rolls back confirmation and recovery repairs it once', async () => {
+    await seedPayment('audit-fault', 'T1', 1000);
+    await pool.query(`ALTER TABLE refund_audit ADD CONSTRAINT fail_confirmation CHECK (event NOT IN ('confirmed','confirmed_on_recovery')) NOT VALID`);
+    let failed = false;
+    try { await refund('audit-fault', 'T1', 'audit-fault-key', 100); } catch { failed = true; }
+    finally { await pool.query(`ALTER TABLE refund_audit DROP CONSTRAINT fail_confirmation`); }
+    const row = await pool.query(`SELECT state FROM refunds WHERE payment_id='audit-fault'`);
+    const before = provider.callCount();
+    const recovered = await resolvePending('T1', 'audit-fault', 'audit-fault-key');
+    const audit = await pool.query(`SELECT count(*)::int n FROM refund_audit WHERE payment_id='audit-fault' AND event='confirmed_on_recovery'`);
+    return failed && row.rows[0].state === 'pending_unknown' && recovered === 'confirmed' && provider.callCount() === before && audit.rows[0].n === 1;
+  });
+  await check('refund: parallel recovery writes exactly one confirmation audit', async () => {
+    await seedPayment('parallel-recovery', 'T1', 1000);
+    provider.failNext = 'timeout';
+    await refund('parallel-recovery', 'T1', 'parallel-key', 100);
+    await Promise.all(Array.from({length: 8}, () => resolvePending('T1', 'parallel-recovery', 'parallel-key')));
+    const audit = await pool.query(`SELECT count(*)::int n FROM refund_audit WHERE payment_id='parallel-recovery' AND event='confirmed_on_recovery'`);
+    return audit.rows[0].n === 1;
+  });
+  await check('refund: unsafe Number minor units are rejected before rounding can enter the DB', async () => {
+    try { await refund('any', 'T1', 'unsafe', Number.MAX_SAFE_INTEGER+1); return false; }
+    catch (e) { return /exact bigint/.test((e as Error).message); }
+  });
   console.log(`\n${pass} passed, ${fail} failed`);
   if (fail) console.log('failures:\n' + failures.map((f) => '  - ' + f).join('\n'));
   pool.end().catch(() => {});

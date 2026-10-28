@@ -1,5 +1,7 @@
 # Fintech Compliance Skills
 
+> **Release validation scope (2026-10-28): CLI tests are NOT RUN.** By the owner's explicit decision, installer/doctor command tests, installed-artifact CLI smoke tests, and live Claude Code/Codex/Kiro sessions are excluded from this release. Module tests, schema/catalog checks, TypeScript typechecking, and real PostgreSQL harnesses remain required. A green release gate does not certify CLI compatibility or agent effectiveness. See [current closure and evidence](docs/development/RELEASE_CLOSURE.md).
+
 **Guardrails that make AI coding assistants write regulation-aware financial
 software — and refuse to write code that would break the rules.**
 

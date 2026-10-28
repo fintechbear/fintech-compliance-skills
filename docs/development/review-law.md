@@ -6,7 +6,7 @@ Review date: 2026-10-28. Independent research; claims not assumed correct.
 
 ---
 
-## FCS-AML-001 — AML/CFT screening must not be skipped/disabled; a hit is warn+audit+hold, not silent-pass
+## FCS-AML-001 — AML/CFT screening must not be skipped; distinguish candidate matches, PEP risk and confirmed sanctions matches
 
 **Cited basis:** AML/CFT obligations (jurisdiction-specific; e.g. MASAK/OFAC/EU lists).
 
@@ -19,7 +19,7 @@ Jurisdiction mapping in the citation is accurate:
 - **EU** — Anti-Money Laundering Directives (AMLD; latest 5AMLD/6AMLD) plus the new **AML Regulation + AMLA** institutional reform.
 - **Turkey** — **Law No. 5549** (Law on Prevention of Laundering Proceeds of Crime, 11 Oct 2006) with **MASAK** as supervisor, imposing CDD, record-keeping and reporting duties on obliged parties.
 
-The behavioural claim (never skip/disable required screening; a sanctions/PEP hit must be warned, audited and held rather than silently passed) is consistent with FATF CDD expectations and with STR/SAR + freezing obligations under these national regimes. Because screening requirements and list sources differ by jurisdiction, the control is correctly scoped as jurisdiction-specific and does **not** overclaim a universal statute.
+Correction (2026-10-28): never bypass required screening, but do not equate a PEP classification, candidate name match and confirmed sanctions match. FATF PEP guidance requires additional risk-based measures and does not create a universal automatic freeze. A hold/freeze must follow the applicable regime or a declared institution policy. Source: https://www.fatf-gafi.org/en/publications/Fatfrecommendations/Peps-r12-r22.html . Because screening requirements and list sources differ by jurisdiction, the control is correctly scoped as jurisdiction-specific and does **not** overclaim a universal statute.
 
 Sources:
 - FATF Recommendations / Mutual Evaluation of Turkey 2019 — [fatf-gafi.org](https://www.fatf-gafi.org/en/publications/Mutualevaluations/Mutualevaluationofturkey.html), [Türkiye country page](https://www.fatf-gafi.org/en/countries/detail/Turkey.html)

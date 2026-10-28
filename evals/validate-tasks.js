@@ -4,7 +4,7 @@
 // trusted by hand). Also enforces a couple of cross-field invariants the schema cannot express:
 //   - a code_invariant task SHOULD carry an exec_probe OR be explicitly review-only,
 //   - ids are unique and sequential-ish (no duplicates),
-//   - an exec_probe harness must import ./candidate.mjs (so it actually runs the model's code).
+//   - structured exec_probe cases have either an expected return or expected rejection.
 const fs = require('fs');
 const path = require('path');
 const { validate } = require('../controls/jsonschema.js');
@@ -25,7 +25,9 @@ for (const line of lines) {
   seen.add(t.id);
   if (t.grader && t.grader.kind === 'code_invariant') {
     if (!t.grader.exec_probe) errors.push(`${t.id}: code_invariant without an exec_probe (a keyword probe is not accepted — R04)`);
-    else if (!/candidate\.mjs/.test(t.grader.exec_probe.harness)) errors.push(`${t.id}: exec_probe harness does not import ./candidate.mjs (it would not run the model's code)`);
+    else for (const c of t.grader.exec_probe.cases || []) {
+      if (c.throws === true ? Object.hasOwn(c, 'expected') : !Object.hasOwn(c, 'expected')) errors.push(`${t.id}: probe case needs exactly an expected return or throws:true`);
+    }
   }
 }
 

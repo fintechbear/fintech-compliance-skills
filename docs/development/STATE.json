@@ -1,56 +1,7 @@
 {
-  "schema_version": "2.0",
-  "project": "fintech-compliance-skills",
-  "workstream": "R01-R12 + A-G remediation",
-  "branch": "fix/r01-r11-remediation",
-  "base_branch": "main",
-  "review_base_sha": "654018e847e5f91801d5dc0bdf80af7ba6be2517",
-  "head_sha": "042abd8",
-  "pr": {
-    "number": 10,
-    "url": "https://github.com/fintechbear/fintech-compliance-skills/pull/10",
-    "status": "draft",
-    "merged": false
-  },
-  "ci": {
-    "run_id": 40675121144,
-    "head_sha": "042abd8",
-    "conclusion": "success",
-    "jobs_green": [
-      "installer (ubuntu+windows x node 18/20/22/24)",
-      "dotnet-postgres-harness (ubuntu, real PostgreSQL 16)",
-      "ts-postgres-harness (ubuntu, real PostgreSQL 16)",
-      "control-catalog",
-      "eval-harness-selftests",
-      "negative-gate-proof"
-    ]
-  },
-  "artifact": {
-    "name": "fintech-compliance-skills-1.0.0.tgz",
-    "sha256": "3d65f2464b260e161c0937b62368f7e9ad723207d5f89e3f737298ddf72d0faf",
-    "note": "content/inventory deterministic; npm pack embeds mtimes so a later pack's byte-hash may differ"
-  },
-  "findings_closed": ["R01","R02","R03","R04","R05","R06","R07","R08","R09","R10","R11","R12","E_cli","F_gate","G_content","G_readme"],
-  "harness_real_pg": {"transfer":"26/26","webhook":"21/21","ledger":"13/13","refund":"14/14","retention":"9/9","dotnet":"green"},
-  "controls_catalog": {"total": 23, "verified": 23, "needs_review": 0, "validate_warnings": 0},
-  "real_agent_eval": {"status": "PARTIAL", "runtime": "codex-cli 0.165.0", "smoke_3x3": "done (T016 PASS/refused, T026 NOT_RUN timeout, T036 NEEDS_REVIEW)", "full_40x3": "runnable, bounded paid run not completed"},
-  "environments": {
-    "windows_host": {"node": "v24.14.1", "npm": "11.12.1", "agents": ["claude 2.1.283", "codex 0.165.0", "kiro"]},
-    "local_debian": {"status": "UNREACHABLE this cycle (tailscale NoState, port 22 closed)", "substitute": "GitHub Actions PostgreSQL 16"}
-  },
-  "blocked": {
-    "local_debian_real_pg": "down; substituted by CI PG16",
-    "full_40x3_eval": "bounded paid run (budget); real 3x3 smoke proves the path",
-    "npm_publish": "out of scope (rule 11); publish workflow wired to full gate; OIDC account setup manual"
-  },
-  "evidence_docs": [
-    "docs/development/ACCEPTANCE_MATRIX.md",
-    "docs/development/CLOSURE_REPORT.md",
-    "docs/development/result-manifest.json",
-    "docs/development/EVAL_REPORT.md",
-    "docs/development/review-pci.md",
-    "docs/development/review-standards.md",
-    "docs/development/review-law.md"
-  ],
-  "release_readiness": "technical gates GREEN on 042abd8; full 40x3 eval PARTIAL; NOT merged/tagged/published"
+  "phase": "release-closure",
+  "current_report": "docs/development/RELEASE_CLOSURE.md",
+  "scope": "CLI tests explicitly NOT RUN; non-CLI gate required",
+  "evidence": "current Verify release-evidence artifact",
+  "publication": "not performed"
 }

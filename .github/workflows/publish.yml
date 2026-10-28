@@ -23,7 +23,7 @@ on:
   workflow_dispatch: {}
 
 jobs:
-  # F: the FULL quality gate (installer matrix, real-PG .NET + TS harnesses, control catalog,
+  # Full approved scope: module matrix, real-PG .NET + TS harnesses, control catalog,
   # schema/eval self-tests, negative-gate proof) must pass on THIS SAME ref before we publish.
   # Calling the reusable Verify workflow makes publish WAIT for every one of its jobs — a red or
   # missing DB/typecheck/schema gate blocks the release. The old gate ran only `verify` + `test`.
@@ -68,21 +68,22 @@ jobs:
       - name: Install dev dependencies (npm ci)
         run: npm ci
 
-      - name: Quality gate — must pass before publish (same checkout that is published)
-        run: |
-          npm run verify
-          npm test
-
-      - name: Pack once and verify the artifact installs from the tarball
+      - name: Pack once and record artifact inventory (CLI tests explicitly NOT RUN)
         shell: bash
         run: |
           TGZ=$(npm pack --silent | tail -1)
-          echo "artifact: $TGZ"
-          sha256sum "$TGZ"
-          mkdir -p /tmp/verify && tar -xzf "$TGZ" -C /tmp/verify
-          node /tmp/verify/package/installer/index.js --tool claude --target /tmp/pkgtest --home /tmp/pkgtest >/dev/null
-          echo "packaged install OK ($(ls /tmp/pkgtest/.claude/skills | wc -l) skills)"
+          sha256sum "$TGZ" | tee artifact.sha256
+          tar -tzf "$TGZ" > artifact-files.txt
           echo "FCS_TGZ=$TGZ" >> "$GITHUB_ENV"
+          echo "CLI tests NOT RUN: installer, doctor and live agent sessions are excluded." >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain the exact publication artifact and checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: publication-artifact
+          path: |
+            *.tgz
+            artifact.sha256
+            artifact-files.txt
 
       - name: Publish (the same packed artifact)
         run: npm publish "$FCS_TGZ" --access public --provenance

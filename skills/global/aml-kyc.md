@@ -47,3 +47,7 @@ def open_account(applicant):
 def transfer(...):
     if flagged(tx): return               # silently drops instead of reporting
 ```
+
+## Match handling and scope
+
+A candidate name match, a false positive, PEP classification and a confirmed sanctions match are distinct decisions. Record the screening/case decision and apply the applicable jurisdiction and institution policy. PEP status triggers risk-based due diligence, not a universal automatic freeze or rejection. Holds/freezes require the applicable sanctions/legal basis or an explicitly declared institution policy. Required screening must never be bypassed.

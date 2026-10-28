@@ -1,6 +1,6 @@
 'use strict';
 // Codex CLI adapter. Runs one task prompt non-interactively in an ISOLATED sandbox and
-// returns a structured result. Timeout, non-zero exit, and empty output are DISTINCT
+// returns a structured result. Runtime CLI validation is excluded from this release. Timeout, non-zero exit, and empty output are DISTINCT
 // states — never silently treated as success. Does NOT call any LLM itself; it shells
 // out to the real `codex exec` the operator already has configured.
 //
@@ -47,67 +47,33 @@ const CONFIG_INSTRUCTION_KEYS = [
 // inherit a permissive personal setting (R05). synthMinimalConfig adds them with safe defaults.
 const CONFIG_ALLOW_KEYS = ['model', 'model_provider', 'model_reasoning_effort'];
 
-// The eval's OWN permission posture, written explicitly into every synthesised config so a
-// personal `sandbox_mode = "danger-full-access"` / `approval_policy = "never"` can never leak
-// in and silently widen what the evaluated agent may do. These are the declared eval perms.
-const EVAL_PERMISSIONS = {
-  approval_policy: '"never"',        // non-interactive run; the eval drives the agent unattended
-  sandbox_mode: '"read-only"',       // the agent answers a prompt; it must not write/network out
-};
-
-// Strip a TOML inline comment (a # not inside a quoted string) from a line. This is what made
-// `[model_providers.p] # provider connection` fall through the old section regex and DROP the
-// provider wiring (R05). Quotes are tracked so a # inside a value string is preserved.
-function stripInlineComment(line) {
-  let inS = false, inD = false;
-  for (let i = 0; i < line.length; i++) {
-    const ch = line[i];
-    if (ch === "'" && !inD) inS = !inS;
-    else if (ch === '"' && !inS) inD = !inD;
-    else if (ch === '#' && !inS && !inD) return line.slice(0, i);
-  }
-  return line;
-}
-
-// Minimal TOML reader/writer for the SUBSET codex config uses: top-level scalars and
-// [section]/[a.b] tables of scalars, now comment-tolerant. Not a general TOML parser — unknown
-// complex values are dropped (conservative: when unsure, keep LESS, never more). Good enough to
-// strip instruction surfaces while preserving provider wiring, even with inline comments.
-function synthMinimalConfig(tomlText) {
-  const lines = String(tomlText).split(/\r?\n/);
-  const out = [];
-  let section = '';               // current [table] path, '' = top level
-  let keepSection = true;         // whether the current section is provider wiring we keep
-  const isProviderSection = (s) => /^model_providers\b/.test(s) || s === '';
+// Parse TOML before allow-listing; quoted provider names, escaped strings, inline tables
+// and comments retain their meaning. Never copy arbitrary provider/instruction tables.
+function synthMinimalConfig(tomlText, sandbox) {
+  const TOML = require('@iarna/toml');
+  const src = TOML.parse(String(tomlText));
+  const cfg = {};
   const kept = { providers: [], topKeys: [] };
-  for (const raw of lines) {
-    const line = stripInlineComment(raw).replace(/\s+$/, '');
-    const t = line.trim();
-    if (!t) continue;
-    const sec = t.match(/^\[([^\]]+)\]$/);
-    if (sec) {
-      section = sec[1].trim();
-      keepSection = isProviderSection(section);
-      if (keepSection && section) { out.push(`[${section}]`); kept.providers.push(section); }
-      continue;
-    }
-    const kv = t.match(/^([A-Za-z0-9_.-]+)\s*=\s*(.*)$/);
-    if (!kv) continue;
-    const key = kv[1];
-    // drop any instruction-bearing key anywhere; also drop a permission key from the global
-    // config — the eval sets its OWN below, so a permissive personal value cannot leak in.
-    if (CONFIG_INSTRUCTION_KEYS.includes(key)) continue;
-    if (key === 'approval_policy' || key === 'sandbox_mode') continue;
-    if (section === '') {
-      if (!CONFIG_ALLOW_KEYS.includes(key)) continue; // top-level: allow-list only
-      out.push(`${key} = ${kv[2]}`); kept.topKeys.push(key);
-    } else if (keepSection) {
-      out.push(`${key} = ${kv[2]}`);           // inside a kept provider table
+  for (const key of CONFIG_ALLOW_KEYS) if (Object.hasOwn(src, key)) { cfg[key] = src[key]; kept.topKeys.push(key); }
+  const providerKeys = ['name', 'base_url', 'env_key', 'http_headers', 'env_http_headers', 'wire_api', 'query_params', 'requires_openai_auth', 'request_max_retries', 'stream_max_retries', 'stream_idle_timeout_ms', 'supports_websockets'];
+  if (src.model_providers && typeof src.model_providers === 'object') {
+    cfg.model_providers = {};
+    for (const [name, source] of Object.entries(src.model_providers)) {
+      if (!source || typeof source !== 'object') continue;
+      const dest = {};
+      for (const key of providerKeys) if (Object.hasOwn(source, key)) dest[key] = source[key];
+      Object.defineProperty(cfg.model_providers, name, { value: dest, enumerable: true });
+      kept.providers.push(`model_providers.${name}`);
     }
   }
-  // write the eval's OWN explicit permissions at the top level (declared, not inherited).
-  const header = Object.entries(EVAL_PERMISSIONS).map(([k, v]) => `${k} = ${v}`);
-  return { text: header.concat(out).join('\n') + '\n', kept, permissions: { ...EVAL_PERMISSIONS } };
+  // A read-only legacy sandbox does not restrict reads to the workspace. Use an explicit
+  // filesystem profile: runtime files + this exact sandbox, no other condition/prep/grader.
+  cfg.approval_policy = 'never';
+  cfg.default_permissions = 'fcs_eval';
+  const filesystem = { ':minimal': 'read' };
+  if (sandbox) filesystem[path.resolve(sandbox)] = 'read';
+  cfg.permissions = { fcs_eval: { filesystem, network: { enabled: false } } };
+  return { text: TOML.stringify(cfg), kept, permissions: { approval_policy: 'never', default_permissions: 'fcs_eval' } };
 }
 
 // Build a clean CODEX_HOME under baseDir; returns { dest, kept }. Throws if no global auth.
@@ -122,9 +88,11 @@ function prepareCodexHome(baseDir, globalHome = path.join(os.homedir(), '.codex'
   const cfgSrc = path.join(globalHome, 'config.toml');
   let kept = { providers: [], topKeys: [] };
   if (fs.existsSync(cfgSrc)) {
-    const syn = synthMinimalConfig(fs.readFileSync(cfgSrc, 'utf8'));
+    const syn = synthMinimalConfig(fs.readFileSync(cfgSrc, 'utf8'), path.join(baseDir, 'sandbox'));
     fs.writeFileSync(path.join(dest, 'config.toml'), syn.text, 'utf8');
     kept = syn.kept;
+  } else {
+    fs.writeFileSync(path.join(dest, 'config.toml'), synthMinimalConfig('', path.join(baseDir, 'sandbox')).text);
   }
   return { dest, kept };
 }

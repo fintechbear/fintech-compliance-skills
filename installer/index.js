@@ -93,65 +93,17 @@ function parseSkill(abs) {
   return { title, desc, body, name, triggers, extraMeta, hadFrontmatter: !!fm.meta };
 }
 
-// Dependency-free YAML-frontmatter reader for the SUBSET our skill files use: a leading `---`
-// block of `key: value` lines where a value is a (optionally quoted) scalar, a NESTED MAPPING
-// (indented `key: value` lines under a bare `key:`), or a block SEQUENCE (indented `- item`
-// lines). It is not full YAML, but it round-trips the shapes authors actually use (e.g.
-// `metadata:` with a nested `version:`), so nested keys are no longer silently dropped (R08).
+// YAML frontmatter uses the package runtime dependency js-yaml: a leading `---`
+// block parsed using JSON_SCHEMA, including folded strings, comments, mappings and sequences.
+// Malformed YAML/duplicate keys fail explicitly; custom executable tags are not enabled.
 // Returns { meta, body }; meta is null when the file does not open with a `---` fence.
 function parseFrontmatter(text) {
   const m = text.match(/^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?/);
   if (!m) return { meta: null, body: text };
-  const scalar = (raw) => {
-    let val = raw;
-    if ((val.startsWith('"') && val.endsWith('"') && val.length >= 2) ||
-        (val.startsWith("'") && val.endsWith("'") && val.length >= 2)) {
-      try { return val[0] === '"' ? JSON.parse(val) : val.slice(1, -1); } catch { return val.slice(1, -1); }
-    }
-    if (val === 'true') return true;
-    if (val === 'false') return false;
-    if (/^-?\d+$/.test(val)) return Number(val);
-    return val;
-  };
-  // tokenize into (indent, text) ignoring blank/comment lines
-  const toks = [];
-  for (const rawLine of m[1].split(/\r?\n/)) {
-    const noTrail = rawLine.replace(/\s+$/, '');
-    if (!noTrail.trim() || /^\s*#/.test(noTrail)) continue;
-    const indent = noTrail.length - noTrail.replace(/^\s+/, '').length;
-    toks.push({ indent, text: noTrail.trim() });
-  }
-  // recursive-descent over the indented token list
-  let i = 0;
-  function parseBlock(minIndent) {
-    // decide mapping vs sequence by the first token at this indent
-    if (i < toks.length && toks[i].text.startsWith('- ')) {
-      const arr = [];
-      const ind = toks[i].indent;
-      while (i < toks.length && toks[i].indent === ind && toks[i].text.startsWith('- ')) {
-        arr.push(scalar(toks[i].text.slice(2).trim())); i++;
-      }
-      return arr;
-    }
-    const obj = {};
-    while (i < toks.length && toks[i].indent >= minIndent) {
-      const { indent, text: t } = toks[i];
-      if (indent !== minIndent) break; // belongs to a deeper block handled by recursion
-      const kv = t.match(/^([A-Za-z0-9_.-]+):\s?(.*)$/);
-      if (!kv) { i++; continue; }
-      const key = kv[1], rest = kv[2];
-      if (rest !== '') { obj[key] = scalar(rest); i++; }
-      else {
-        i++;
-        if (i < toks.length && toks[i].indent > indent) obj[key] = parseBlock(toks[i].indent);
-        else obj[key] = ''; // bare key with nothing under it
-      }
-    }
-    return obj;
-  }
-  const meta = toks.length ? parseBlock(toks[0].indent) : {};
-  const body = text.slice(m[0].length);
-  return { meta, body };
+  const yaml = require('js-yaml');
+  const meta = yaml.load(m[1], { schema: yaml.JSON_SCHEMA });
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) throw new Error('skill frontmatter must be a YAML mapping');
+  return { meta, body: text.slice(m[0].length) };
 }
 
 function triggersFor(skill, parsed) {
@@ -180,17 +132,9 @@ function yamlScalar(s) {
 // Serialise a nested value (mapping/array/scalar) to indented YAML lines (subset that
 // round-trips what parseFrontmatter reads). Keeps nested keys like metadata.version (R08).
 function yamlEmit(key, val, indent) {
-  const pad = ' '.repeat(indent);
-  if (Array.isArray(val)) {
-    if (val.length === 0) return [`${pad}${key}: []`];
-    return [`${pad}${key}:`, ...val.map((v) => `${pad}  - ${yamlScalar(v)}`)];
-  }
-  if (val && typeof val === 'object') {
-    const lines = [`${pad}${key}:`];
-    for (const k of Object.keys(val)) lines.push(...yamlEmit(k, val[k], indent + 2));
-    return lines;
-  }
-  return [`${pad}${key}: ${yamlScalar(val)}`];
+  const yaml = require('js-yaml');
+  return yaml.dump({ [key]: val }, { schema: yaml.JSON_SCHEMA, noRefs: true, lineWidth: -1 })
+    .trimEnd().split('\n').map(line => ' '.repeat(indent) + line);
 }
 
 // The maximum description length we will emit. A valid description UP TO this is preserved

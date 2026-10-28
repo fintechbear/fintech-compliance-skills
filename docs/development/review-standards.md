@@ -10,7 +10,7 @@ Verdict legend: **VERIFIED** = citation is accurate against the primary source;
 
 ## FCS-SECRET-001 — OWASP Password Storage Cheat Sheet
 
-**Claim:** Never store passwords/secrets in plaintext or reversibly; hash
+**Claim:** Never store credentials/secrets in plaintext; local authentication passwords use irreversible adaptive hashes; retrievable service secrets use managed encryption; hash
 passwords with a slow, salted KDF (Argon2id / scrypt / bcrypt / PBKDF2).
 
 **Verdict: VERIFIED** (with a parameter-currency note — see below).
@@ -42,8 +42,7 @@ PBKDF2 iteration counts: HMAC-SHA256 = 600,000; HMAC-SHA512 = 220,000;
 HMAC-SHA1 = 1,400,000 (**legacy only, do not use for new systems**).
 
 **Notes / caveats for the control author:**
-- The control's high-level claim (no plaintext/reversible storage; use a slow
-  salted KDF; the four named algorithms) is **fully accurate**.
+- Local-authentication passwords use slow salted KDFs. This prohibition on reversible password storage does not apply to API keys/private keys that the service must retrieve: those use managed encryption and access control, as specified by the Secrets Management source below.
 - If the control text hard-codes specific parameters (e.g. an older
   "Argon2id m=15 MiB"), update to the current **19 MiB / t=2 / p=1** minimum —
   a stale 15 MiB figure appears in some mirrored copies and is out of date.
@@ -198,3 +197,7 @@ ISO-4217 list synced to the maintenance agency, and payment-processor docs.)
 
 All verdicts derived from the primary standards bodies (OWASP, NIST/CSRC, ISO)
 or their authoritative maintenance agents; no citation was assumed correct.
+
+## Storage-scope correction (2026-10-28)
+
+FCS-SECRET-001 applies password hashing to local-authentication passwords. Retrievable API keys/private keys are encrypted and access-controlled in a secrets manager/KMS/HSM; they are not replaced with irreversible password hashes. Primary source: https://cheatsheetseries.owasp.org/cheatsheets/Secrets_Management_Cheat_Sheet.html (sections 4.2 and 7).
