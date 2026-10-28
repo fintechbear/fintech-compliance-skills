@@ -791,3 +791,118 @@ test('G4: partial/failed AGENTS.md write never corrupts the active file (all sta
     fs.rmSync(t, { recursive: true, force: true });
   }
 });
+
+// ---------------------------------------------------------------------------
+// E: CLI subcommands — list / explain / dry-run / diff / uninstall
+// ---------------------------------------------------------------------------
+// exit-code-aware runner (run() throws on non-zero; these need the code+output)
+function runCli(args, opts = {}) {
+  try { return { code: 0, out: execFileSync(process.execPath, [INSTALLER, ...args], { stdio: 'pipe', ...opts }).toString() }; }
+  catch (e) { return { code: e.status ?? 1, out: (e.stdout || '').toString() + (e.stderr || '').toString() }; }
+}
+
+test('E-list: JSON lists every skill with its controls + evidence status', () => {
+  const r = runCli(['list', '--json']);
+  assert.equal(r.code, 0, 'list exits 0');
+  const j = JSON.parse(r.out);
+  assert.equal(j.skills.length, sourceSkillNames.length, 'lists every source skill');
+  for (const s of j.skills) {
+    assert.ok(typeof s.description === 'string' && s.description.length > 0, `${s.name} has a description`);
+    assert.ok(Array.isArray(s.controls), `${s.name} reports its controls`);
+    assert.ok(Number.isInteger(s.needs_review_controls), `${s.name} reports needs-review count`);
+  }
+});
+
+test('E-explain: a declared-role profile selects controls with REASONS; obligations not inferred', () => {
+  const r = runCli(['explain', '--profile', 'tr-psp-postgres', '--json']);
+  assert.equal(r.code, 0, 'explain exits 0');
+  const j = JSON.parse(r.out);
+  assert.equal(j.role_declared, true, 'role is declared in this profile');
+  assert.ok(j.selected.length > 0, 'some controls selected');
+  for (const s of j.selected) assert.ok(s.why && s.why.length, `${s.id} has an explicit reason`);
+  // the red-line PAN control is selected because the profile declares pan data
+  assert.ok(j.selected.some((s) => s.id === 'FCS-PAN-001'), 'PAN control selected for a pan-handling profile');
+});
+
+test('E-explain: a profile with role NOT declared surfaces the ambiguity (no inference)', () => {
+  const t = tmp();
+  // synthesise a profile whose role is not declared
+  const profDir = path.join(REPO_ROOT, 'controls', 'profiles');
+  const tmpProfile = path.join(profDir, 'zzz-test-undeclared.json');
+  fs.writeFileSync(tmpProfile, JSON.stringify({
+    profile_id: 'zzz-test-undeclared', description: 'test', entity_role: { kind: 'unknown', activity: 'unknown', declared: false },
+    jurisdictions: ['TR'], data_categories: ['pan'], payment_providers: [], stack: { languages: [], databases: [], detected: true }, assumptions: [], overlays: [],
+  }), 'utf8');
+  try {
+    const r = runCli(['explain', '--profile', 'zzz-test-undeclared', '--json']);
+    const j = JSON.parse(r.out);
+    assert.equal(j.role_declared, false, 'role not declared');
+    assert.ok(j.ambiguities.some((a) => /not inferred/i.test(a)), 'ambiguity: obligations are not inferred');
+    assert.ok(j.ambiguities.some((a) => /auto-detected/i.test(a)), 'ambiguity: detected stack flagged');
+  } finally { fs.rmSync(tmpProfile, { force: true }); fs.rmSync(t, { recursive: true, force: true }); }
+});
+
+test('E-dry-run: install --dry-run writes NOTHING', () => {
+  const t = tmp();
+  const r = runCli(['--tool', 'claude', '--target', t, '--home', t, '--dry-run', '--json']);
+  assert.equal(r.code, 0);
+  const j = JSON.parse(r.out);
+  assert.equal(j.dry_run, true);
+  assert.ok(j.changes.length === sourceSkillNames.length);
+  assert.ok(!fs.existsSync(path.join(t, '.claude')), 'dry-run created NO files');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('E-diff: diff reports create/update/unchanged and touches nothing', () => {
+  const t = tmp();
+  run(['--tool', 'claude', '--target', t, '--home', t]); // real install
+  const before = walkFiles(path.join(t, '.claude'));
+  const r = runCli(['diff', '--tool', 'claude', '--target', t, '--home', t, '--json']);
+  assert.equal(r.code, 0);
+  const j = JSON.parse(r.out);
+  assert.ok((j.summary.unchanged || 0) === sourceSkillNames.length, 'a fresh install diffs as all-unchanged');
+  const after = walkFiles(path.join(t, '.claude'));
+  assert.deepEqual(after, before, 'diff wrote nothing');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('E-uninstall: removes only unchanged managed; preserves user edits; --dry-run writes nothing', () => {
+  const t = tmp();
+  run(['--tool', 'claude', '--target', t, '--home', t]);
+  // user-edit one skill
+  const edited = path.join(t, '.claude', 'skills', 'go', 'SKILL.md');
+  fs.appendFileSync(edited, '\n<!-- user edit -->\n');
+  // dry-run first: nothing removed
+  const dry = runCli(['uninstall', '--tool', 'claude', '--target', t, '--home', t, '--dry-run']);
+  assert.equal(dry.code, 0);
+  assert.ok(fs.existsSync(edited), 'dry-run uninstall removed nothing');
+  // real uninstall: unchanged removed, the edited one preserved
+  const r = runCli(['uninstall', '--tool', 'claude', '--target', t, '--home', t]);
+  assert.equal(r.code, 0);
+  assert.ok(fs.existsSync(edited), 'user-edited skill PRESERVED');
+  assert.ok(!fs.existsSync(path.join(t, '.claude', 'skills', 'python', 'SKILL.md')), 'an unchanged managed skill was removed');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('E-uninstall codex: removes the managed AGENTS block but keeps user text', () => {
+  const t = tmp();
+  fs.writeFileSync(path.join(t, 'AGENTS.md'), '# My own notes\nkeep me\n', 'utf8');
+  run(['--tool', 'codex', '--target', t, '--home', t]);
+  const r = runCli(['uninstall', '--tool', 'codex', '--target', t, '--home', t]);
+  assert.equal(r.code, 0);
+  const agents = fs.readFileSync(path.join(t, 'AGENTS.md'), 'utf8');
+  assert.ok(agents.includes('# My own notes') && agents.includes('keep me'), 'user text preserved');
+  assert.ok(!agents.includes(api.BLOCK_START), 'managed block removed');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('E-strict: an unknown flag or command errors (exit 2) and never installs', () => {
+  const t = tmp();
+  const f = runCli(['--tool', 'claude', '--target', t, '--home', t, '--frobnicate']);
+  assert.equal(f.code, 2, 'unknown flag exits 2');
+  assert.ok(!fs.existsSync(path.join(t, '.claude')), 'unknown flag did NOT install');
+  const c = runCli(['frobnicate', '--tool', 'claude', '--target', t, '--home', t]);
+  assert.equal(c.code, 2, 'unknown command exits 2');
+  assert.ok(!fs.existsSync(path.join(t, '.claude')), 'unknown command did NOT install');
+  fs.rmSync(t, { recursive: true, force: true });
+});
