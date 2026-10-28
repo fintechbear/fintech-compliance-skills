@@ -71,10 +71,11 @@ async function eraseRequest(subject: string): Promise<Record<EraseDecision, numb
   const out: Record<EraseDecision, number> = { erased: 0, kept_mandatory_retention: 0, kept_legal_hold: 0, kept_unknown_category: 0, kept_raced_hold: 0 };
   const ids = (await pool.query(`SELECT id FROM records WHERE subject_id=$1 AND erased=false`, [subject])).rows.map((r) => r.id);
   for (const id of ids) {
+    // Each record is decided in its own transaction. The connection is released in FINALLY so
+    // no code path (including an early return) can leak it and exhaust the pool.
     const c = await pool.connect();
     try {
       await c.query('BEGIN');
-      // Lock the record so a concurrent placeHold serializes against this decision.
       const row = await c.query(`SELECT category, age_days, legal_hold, erased FROM records WHERE id=$1 FOR UPDATE`, [id]);
       if (!row.rowCount) { await c.query('ROLLBACK'); continue; }
       const r = row.rows[0];
@@ -85,16 +86,15 @@ async function eraseRequest(subject: string): Promise<Record<EraseDecision, numb
       if (cat.basis === 'mandatory_financial' && r.age_days < cat.retainDays) {            // still in retention
         out.kept_mandatory_retention++; await c.query('COMMIT'); continue;
       }
-      // erasable (or retention lapsed): CONDITIONAL destructive write inside the lock.
-      const erased = await shredIfErasable(c, id);
-      if (erased) out.erased++; else out.kept_raced_hold++; // a hold slipped in despite the lock: do NOT erase
+      const erased = await shredIfErasable(c, id);                                         // conditional destructive write
+      if (erased) out.erased++; else out.kept_raced_hold++;
       await c.query('COMMIT');
     } catch (e) {
       try { await c.query('ROLLBACK'); } catch { /* ignore */ }
-      c.release();
       throw e;
+    } finally {
+      c.release();
     }
-    c.release();
   }
   return out;
 }
@@ -118,10 +118,10 @@ async function retentionSweep(): Promise<{ swept: number }> {
       await c.query('COMMIT');
     } catch (e) {
       try { await c.query('ROLLBACK'); } catch { /* ignore */ }
-      c.release();
       throw e;
+    } finally {
+      c.release();
     }
-    c.release();
   }
   return { swept };
 }
