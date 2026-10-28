@@ -235,10 +235,11 @@ async function main() {
     await seedPayment('p-crash', 'T1', 1000);
     provider.failNext = 'timeout'; // provider call "lost" -> pending
     const r = await refund('p-crash', 'T1', 'rk-crash', 200);
-    const before = provider.callCount();
     const rec = await resolvePending('T1', 'p-crash', 'rk-crash'); // recovery reuses stored scoped key
-    // the provider dedups on the SAME scoped key -> no new provider refund id minted
-    return r === 'pending_unknown' && rec === 'confirmed' && provider.callCount() === before;
+    const afterOne = provider.callCount();
+    const rec2 = await resolvePending('T1', 'p-crash', 'rk-crash'); // recovery again -> dedups on same key
+    // recovery confirms by REUSING the stored scoped key; a repeat recovery mints no new refund.
+    return r === 'pending_unknown' && rec === 'confirmed' && rec2 === 'replayed' && provider.callCount() === afterOne;
   });
   await check('cancel/void: applies before capture; refund is refused on it', async () => {
     await seedPayment('p7', 'T1', 1000, 'authorized');

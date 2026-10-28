@@ -228,6 +228,47 @@ function rewriteRelativeLinks(body) {
   return parts.map((p, i) => (i % 2 === 0 ? rewriteSeg(p) : p)).join('');
 }
 
+// R03: a skill body references repo resources it does NOT carry once installed —
+// `controls/catalog.json`, `controls/profiles/`, `examples/ts-postgres-harness/...`. At the
+// INSTALL TARGET those relative paths are dangling. Rewrite each such reference to a PINNED
+// source URL (immutable at the package version) so it resolves from anywhere. Code is never
+// rewritten; only inline-code resource paths and markdown links are pinned. The controls/
+// resources are ALSO shipped in the package (package.json "files"), but a skill installed
+// into a user's agent dir cannot see the package tree, so the pinned URL is the portable link.
+function pkgVersion() { try { return require(path.join(REPO_ROOT, 'package.json')).version; } catch { return '0.0.0'; } }
+const SOURCE_REPO = 'https://github.com/fintechbear/fintech-compliance-skills';
+function sourceUrl(relPath) { return `${SOURCE_REPO}/blob/v${pkgVersion()}/${relPath}`; }
+const RESOURCE_RE = /\b((?:controls|examples)\/[A-Za-z0-9._/-]+)/g;
+function rewriteResourceRefs(body) {
+  // operate OUTSIDE fenced/inline code (same segmentation as rewriteRelativeLinks)
+  const parts = body.split(/(```[\s\S]*?```|`[^`\n]*`)/g);
+  const rewriteSeg = (seg, isCode) => {
+    if (isCode) {
+      // inside INLINE code we turn a bare resource path into a pinned URL in parentheses after it,
+      // but only for a standalone `controls/...`/`examples/...` chip — never touch code blocks.
+      return seg;
+    }
+    // bare resource paths in prose -> a markdown link to the pinned source
+    return seg.replace(RESOURCE_RE, (m) => `[${m}](${sourceUrl(m)})`);
+  };
+  // isCode is true for odd indices; we leave fenced blocks fully intact, and for inline-code
+  // chips we append a pinned link right after the closing backtick when the chip is a resource.
+  let out = '';
+  for (let i = 0; i < parts.length; i++) {
+    const seg = parts[i];
+    const isCode = i % 2 === 1;
+    if (!isCode) { out += rewriteSeg(seg, false); continue; }
+    // inline/fenced code: keep verbatim, but if an INLINE chip (single backtick) names a resource
+    // path, add a pinned link after it so the reference is reachable without altering the chip.
+    const inlineChip = /^`([^`\n]+)`$/.exec(seg);
+    if (inlineChip && /^(controls|examples)\//.test(inlineChip[1].trim())) {
+      const rel = inlineChip[1].trim().replace(/[.,;:)]+$/, '');
+      out += seg + ` ([pinned](${sourceUrl(rel)}))`;
+    } else out += seg;
+  }
+  return out;
+}
+
 // The managed (new-format) body for a skill, without the trailing hash stamp.
 function managedContent(skill) {
   const parsed = parseSkill(skill.abs);
@@ -235,7 +276,7 @@ function managedContent(skill) {
   // frontmatter-free (parseSkill split it off), so we never emit a second block.
   const name = parsed.name || skill.name;
   return frontmatter(name, parsed.desc, triggersFor(skill, parsed), parsed.extraMeta)
-    + rewriteRelativeLinks(parsed.body);
+    + rewriteResourceRefs(rewriteRelativeLinks(parsed.body));
 }
 
 // ---------- LEGACY output recognition (for migration) ----------

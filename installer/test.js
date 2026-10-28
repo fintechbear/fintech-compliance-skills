@@ -906,3 +906,16 @@ test('E-strict: an unknown flag or command errors (exit 2) and never installs', 
   assert.ok(!fs.existsSync(path.join(t, '.claude')), 'unknown command did NOT install');
   fs.rmSync(t, { recursive: true, force: true });
 });
+
+test('R03: installed skills carry PINNED source URLs for controls/examples references', () => {
+  // fintech-transfer references controls/profiles/ and examples/*-postgres-harness/
+  const s = api.listSkillFiles().find((x) => x.name === 'fintech-transfer');
+  const mc = api.managedContent(s);
+  assert.ok(/examples\/ts-postgres-harness\/\` \(\[pinned\]\(https:\/\/github\.com\/fintechbear\/fintech-compliance-skills\/blob\/v\d+\.\d+\.\d+\//.test(mc),
+    'an examples/ reference is pinned to an immutable source URL');
+  assert.ok(/controls\/profiles\/\` \(\[pinned\]\(https:\/\/github\.com\/fintechbear/.test(mc),
+    'a controls/ reference is pinned to a source URL');
+  // installing twice is byte-identical (the pinned rewrite is deterministic)
+  const mc2 = api.managedContent(s);
+  assert.equal(mc, mc2, 'resource-ref rewrite is idempotent');
+});
