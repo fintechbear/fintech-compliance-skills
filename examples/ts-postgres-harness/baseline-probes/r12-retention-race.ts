@@ -19,7 +19,7 @@ const src = fs.readFileSync(path.join(BL, 'retention.ts'), 'utf8');
 // Strip the auto-run and re-export what we need. We must also reach the base's own `pool`
 // so we can hook it; the base declares `const pool = new Pool(...)` at top level, so we
 // append an export of it.
-let patched = src.replace(/main\(\)\.catch\([^;]*\);?\s*$/m, '');
+let patched = src.replace(/main\(\)\.catch\([\s\S]*$/, '');
 patched += `\nexport { eraseRequest, seed, initSchema, pool };\n`;
 const tmp = path.join(BL, '_probe_retention_base.ts');
 fs.writeFileSync(tmp, patched, 'utf8');

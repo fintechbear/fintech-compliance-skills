@@ -13,7 +13,7 @@ const BL = process.env.BL!;
 const PGCONN = process.env.PGCONN!;
 const src = fs.readFileSync(path.join(BL, 'refund.ts'), 'utf8');
 
-let patched = src.replace(/main\(\)\.catch\([^;]*\);?\s*$/m, '');
+let patched = src.replace(/main\(\)\.catch\([\s\S]*$/, '');
 patched += `\nexport { refund, seedPayment, initSchema };\n`;
 const tmp = path.join(BL, '_probe_refund_base.ts');
 fs.writeFileSync(tmp, patched, 'utf8');

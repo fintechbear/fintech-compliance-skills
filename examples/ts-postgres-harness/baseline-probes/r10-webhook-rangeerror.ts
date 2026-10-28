@@ -12,7 +12,7 @@ const src = fs.readFileSync(path.join(BL, 'webhook.ts'), 'utf8');
 
 // Strip the module's own `main()` auto-invocation so importing it does not run the suite.
 // We keep every function body verbatim; we only neutralise the trailing `main().catch(...)`.
-let patched = src.replace(/main\(\)\.catch\([^;]*\);?\s*$/m, '');
+let patched = src.replace(/main\(\)\.catch\([\s\S]*$/, '');
 // Re-export receiveWebhook + provider so the probe can call them (base did not export them).
 patched += `\nexport { receiveWebhook, provider };\n`;
 
