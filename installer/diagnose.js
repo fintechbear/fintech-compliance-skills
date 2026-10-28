@@ -37,7 +37,10 @@ function argv(name, def) {
   return i >= 0 && i + 1 < process.argv.length ? process.argv[i + 1] : def;
 }
 const HOME = argv('--home', os.homedir());
-const TARGET = argv('--target', HOME);
+// R07: --target defaults to the CURRENT PROJECT DIRECTORY (cwd), not HOME. Project-scoped
+// installs (e.g. default Claude .claude/skills, Codex AGENTS.md) live under the project the
+// developer is standing in; defaulting to HOME silently missed them. --home stays HOME.
+const TARGET = argv('--target', process.cwd());
 const JSON_OUT = process.argv.includes('--json');
 
 const read = (p) => (fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null);
@@ -162,6 +165,25 @@ function codexStatus() {
       try { manifest = JSON.parse(rawM); } catch { issues.push('manifest is not valid JSON (corrupt)'); }
     }
   }
+  // R07: the manifest being self-consistent is NOT enough. Validate its schema/version, then
+  // cross-check it against the EXPECTED inventory (the source skills that an install must carry)
+  // and against the AGENTS.md references — a file deleted from BOTH disk and the manifest, while
+  // AGENTS still points at it, must read as BROKEN, not healthy.
+  if (manifest) {
+    if (manifest.version !== undefined && manifest.version !== 2) {
+      issues.push(`manifest version ${JSON.stringify(manifest.version)} is not the supported v2`);
+    }
+    if (typeof manifest.managed !== 'object' || manifest.managed === null) {
+      issues.push('manifest has no managed map (unexpected schema) — cannot verify integrity');
+    }
+    // path-traversal / symlink guard: a managed/userEdited key must stay inside the tree.
+    for (const relKey of [...Object.keys(manifest.managed || {}), ...Object.keys(manifest.userEdited || {})]) {
+      const abs = path.resolve(treeRoot, relKey);
+      const rel = path.relative(treeRoot, abs);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) { issues.push(`manifest key escapes the tree (path traversal): ${relKey}`); continue; }
+      try { const st = fs.lstatSync(abs); if (st.isSymbolicLink()) issues.push(`managed path is a symlink (refused): ${relKey}`); } catch { /* missing handled below */ }
+    }
+  }
   if (manifest && manifest.managed && typeof manifest.managed === 'object') {
     for (const [relKey, wantHash] of Object.entries(manifest.managed)) {
       managedTotal++;
@@ -170,17 +192,34 @@ function codexStatus() {
       if (cur == null) { issues.push(`managed file deleted: ${relKey}`); continue; }
       const got = sha(cur);
       if (got !== wantHash) {
-        // Our managed baseline hash no longer matches. If the manifest also recorded it as a
-        // user edit, that is a PRESERVED edit; otherwise it is corruption/tampering.
         const ue = manifest.userEdited && manifest.userEdited[relKey];
         if (ue && ue === got) userEditedList.push(relKey);
         else issues.push(`managed file content changed (stale/corrupt): ${relKey}`);
       } else managedOk++;
     }
-    // userEdited entries the manifest declares but that still exist are preserved edits.
     for (const [relKey, h] of Object.entries(manifest.userEdited || {})) {
       const cur = read(path.join(treeRoot, relKey));
       if (cur != null && sha(cur) === h && !userEditedList.includes(relKey)) userEditedList.push(relKey);
+    }
+    // EXPECTED-INVENTORY cross-check: every source skill that an install is expected to carry
+    // must be covered by the manifest (as managed OR userEdited) AND exist on disk. A skill
+    // deleted from BOTH disk and the manifest is caught HERE — the manifest alone would look fine.
+    const expected = idx.listSkillFiles();
+    const covered = new Set([...Object.keys(manifest.managed || {}), ...Object.keys(manifest.userEdited || {})]);
+    for (const s of expected) {
+      const relKey = `skills/${s.group}/${s.file}`;
+      const onDisk = fs.existsSync(path.join(treeRoot, relKey));
+      const inManifest = covered.has(relKey);
+      if (!inManifest && !onDisk) issues.push(`expected skill missing from BOTH the tree and the manifest: ${relKey}`);
+      else if (!onDisk) issues.push(`expected skill missing on disk: ${relKey}`);
+      else if (!inManifest) issues.push(`expected skill present on disk but absent from the manifest (untracked): ${relKey}`);
+    }
+    // AGENTS.md reference cross-check: if the managed block names a skill path, that file must exist.
+    if (agents) {
+      for (const m of agents.matchAll(/\.fintech-compliance-skills\/(skills\/[a-z0-9-]+\/[a-z0-9-]+\.md)/gi)) {
+        const relKey = m[1];
+        if (!fs.existsSync(path.join(treeRoot, relKey))) issues.push(`AGENTS.md references a skill that is not on disk: ${relKey}`);
+      }
     }
   } else if (fs.existsSync(treeRoot) && manifest !== null) {
     issues.push('manifest has no managed map (unexpected schema) — cannot verify integrity');

@@ -98,6 +98,48 @@ try {
     fs.rmSync(t, { recursive: true, force: true });
   }
 
+  // R07f: delete a managed file AND its manifest record, while AGENTS.md still points at it.
+  // The manifest is then self-consistent (it never mentions the file), so a manifest-only
+  // check passes — the EXPECTED-INVENTORY + AGENTS cross-check must still flag it as broken.
+  {
+    const t = fs.mkdtempSync(path.join(os.tmpdir(), 'fcs-r07f-'));
+    execFileSync(process.execPath, [INSTALLER, '--tool', 'codex', '--target', t], { stdio: 'pipe' });
+    const treeRoot = path.join(t, '.fintech-compliance-skills');
+    const manPath = path.join(treeRoot, '.fcs-manifest.json');
+    const relKey = 'skills/core/secure-fintech-coding.md';
+    // sanity: clean install is healthy
+    let rc = node([DIAG, '--home', t, '--target', t, '--json']);
+    ok(rc.code === 0 && JSON.parse(rc.out).installs.find((x) => x.tool === 'codex').healthy, 'R07f pre: clean codex healthy');
+    // delete the file from disk
+    fs.rmSync(path.join(treeRoot, relKey), { force: true });
+    // AND remove its record from the manifest (making the manifest self-consistent)
+    const man = JSON.parse(fs.readFileSync(manPath, 'utf8'));
+    delete man.managed[relKey]; if (man.userEdited) delete man.userEdited[relKey];
+    fs.writeFileSync(manPath, JSON.stringify(man, null, 2), 'utf8');
+    // AGENTS.md still references the skills tree (the managed block points at skills/*)
+    const r2 = node([DIAG, '--home', t, '--target', t, '--json']);
+    const cx = JSON.parse(r2.out).installs.find((x) => x.tool === 'codex');
+    ok(r2.code !== 0, 'R07f: file+manifest-record both deleted -> exit NON-zero (was false OK/healthy)');
+    ok(cx && cx.healthy === false, 'R07f: codex reported NOT healthy');
+    ok(cx && cx.issues.some((s) => /expected skill missing/.test(s) || /references a skill that is not on disk/.test(s)),
+      'R07f: the expected-inventory / AGENTS cross-check names the missing skill');
+    fs.rmSync(t, { recursive: true, force: true });
+  }
+
+  // R07g: with NO --target, diagnose defaults to the CURRENT WORKING DIRECTORY (project), so a
+  // project-scoped install under cwd is discovered without passing --target.
+  {
+    const t = fs.mkdtempSync(path.join(os.tmpdir(), 'fcs-r07g-'));
+    execFileSync(process.execPath, [INSTALLER, '--tool', 'claude', '--target', t, '--home', t], { stdio: 'pipe' });
+    // run diagnose FROM t with no --target; it should pick up t as the project dir
+    let out, code = 0;
+    try { out = execFileSync(process.execPath, [DIAG, '--home', t, '--json'], { cwd: t, stdio: 'pipe' }).toString(); }
+    catch (e) { code = e.status ?? 1; out = (e.stdout || '').toString(); }
+    const proj = JSON.parse(out).installs.find((x) => x.tool === 'claude' && x.scope === 'project');
+    ok(proj && proj.present, 'R07g: default --target is cwd, so the project-scoped install is found');
+    fs.rmSync(t, { recursive: true, force: true });
+  }
+
   // R07c: corrupt manifest -> cannot verify integrity -> broken, exit != 0.
   {
     const t = fs.mkdtempSync(path.join(os.tmpdir(), 'fcs-r07c-'));
