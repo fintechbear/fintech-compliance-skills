@@ -43,9 +43,21 @@ cp tsconfig.json "$BL/tsconfig.json" 2>/dev/null || true
 ln -sf "$HARNESS_DIR/node_modules" "$BL/node_modules" 2>/dev/null || true
 
 fail=0
+# Reset the DB to a pristine public schema before each probe so one probe's tables/types
+# cannot collide with the next (the pg_type 23505 we hit when probes share a database).
+reset_db() {
+  node -e '
+    const pg=require("pg");
+    (async()=>{ const c=new pg.Client({connectionString:process.env.PGCONN});
+      await c.connect();
+      await c.query("DROP SCHEMA public CASCADE; CREATE SCHEMA public;");
+      await c.query("GRANT ALL ON SCHEMA public TO public;");
+      await c.end(); })().catch(e=>{console.error("reset failed",e.message);process.exit(3);});' || return 3
+}
 run_probe() {
   local name="$1"; shift
   echo "### FAILING-FIRST probe: $name"
+  reset_db || { echo "  FAIL could not reset DB before $name"; fail=1; return; }
   if PGCONN="$PGCONN" BL="$HARNESS_DIR/$BL" node --import tsx "$HARNESS_DIR/baseline-probes/$name"; then
     echo "  ok   base reproduced the bug ($name)"
   else
