@@ -67,14 +67,49 @@ function listSkillFiles() {
 
 function parseSkill(abs) {
   const text = fs.readFileSync(abs, 'utf8');
-  const titleMatch = text.match(/^#\s+(?:Skill:\s*)?(.+)$/m);
+  const fm = parseFrontmatter(text);          // { meta, body } — meta null when no source frontmatter
+  const body = fm.meta ? fm.body.replace(/^\s*\n/, '') : text;      // body is ALWAYS frontmatter-free from here on
+  const titleMatch = body.match(/^#\s+(?:Skill:\s*)?(.+)$/m);
   const title = titleMatch ? titleMatch[1].trim() : path.basename(abs, '.md');
-  const descMatch = text.match(/\*\*(.+?)\*\*/s);
-  const desc = descMatch ? descMatch[1].trim().replace(/\s+/g, ' ') : title;
-  return { title, desc, body: text };
+  // R08: prefer the AUTHOR's frontmatter metadata. Only fall back to deriving a
+  // description from the first bold run when the source carries no frontmatter.
+  let desc;
+  if (fm.meta && typeof fm.meta.description === 'string' && fm.meta.description.trim()) {
+    desc = fm.meta.description.trim().replace(/\s+/g, ' ');
+  } else {
+    const descMatch = body.match(/\*\*(.+?)\*\*/s);
+    desc = descMatch ? descMatch[1].trim().replace(/\s+/g, ' ') : title;
+  }
+  // Author-set name wins over the filename-derived default (used by managedContent).
+  const name = fm.meta && typeof fm.meta.name === 'string' && fm.meta.name.trim()
+    ? fm.meta.name.trim() : null;
+  const triggers = fm.meta && typeof fm.meta.triggers === 'string' && fm.meta.triggers.trim()
+    ? fm.meta.triggers.trim() : null;
+  // Any frontmatter key that is NOT one of our three standard fields is client-specific
+  // metadata the author added — carry it through unchanged so we never silently drop it.
+  const STD = new Set(['name', 'description', 'triggers']);
+  const extraMeta = {};
+  if (fm.meta) for (const k of Object.keys(fm.meta)) if (!STD.has(k)) extraMeta[k] = fm.meta[k];
+  return { title, desc, body, name, triggers, extraMeta, hadFrontmatter: !!fm.meta };
 }
 
-function triggersFor(skill) {
+// YAML frontmatter uses the package runtime dependency js-yaml: a leading `---`
+// block parsed using JSON_SCHEMA, including folded strings, comments, mappings and sequences.
+// Malformed YAML/duplicate keys fail explicitly; custom executable tags are not enabled.
+// Returns { meta, body }; meta is null when the file does not open with a `---` fence.
+function parseFrontmatter(text) {
+  const m = text.match(/^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*\r?\n?/);
+  if (!m) return { meta: null, body: text };
+  const yaml = require('js-yaml');
+  const meta = yaml.load(m[1], { schema: yaml.JSON_SCHEMA });
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) throw new Error('skill frontmatter must be a YAML mapping');
+  return { meta, body: text.slice(m[0].length) };
+}
+
+function triggersFor(skill, parsed) {
+  // R08: honour author-declared triggers when the source frontmatter carries them.
+  parsed = parsed || parseSkill(skill.abs);
+  if (parsed.triggers) return parsed.triggers;
   const base = skill.name.replace(/-/g, ', ');
   const extra = {
     languages: 'write code, implement, coding',
@@ -89,12 +124,40 @@ function triggersFor(skill) {
 
 // ---------- YAML-safe emit ----------
 
-function yamlScalar(s) { return JSON.stringify(String(s)); }
+function yamlScalar(s) {
+  if (typeof s === 'number' || typeof s === 'boolean') return String(s);
+  return JSON.stringify(String(s));
+}
 
-function frontmatter(name, description, triggers) {
-  const d = description.length > 300 ? description.slice(0, 297) + '…' : description;
-  return ['---', `name: ${yamlScalar(name)}`, `description: ${yamlScalar(d)}`,
-    `triggers: ${yamlScalar(triggers)}`, '---', '', ''].join('\n');
+// Serialise a nested value (mapping/array/scalar) to indented YAML lines (subset that
+// round-trips what parseFrontmatter reads). Keeps nested keys like metadata.version (R08).
+function yamlEmit(key, val, indent) {
+  const yaml = require('js-yaml');
+  return yaml.dump({ [key]: val }, { schema: yaml.JSON_SCHEMA, noRefs: true, lineWidth: -1 })
+    .trimEnd().split('\n').map(line => ' '.repeat(indent) + line);
+}
+
+// The maximum description length we will emit. A valid description UP TO this is preserved
+// verbatim (no silent truncation — R08); a longer one is an EXPLICIT error so the author fixes
+// the source rather than shipping a quietly cut description. 1024 comfortably covers a real
+// multi-sentence description (incl. the 400-char case) while bounding the frontmatter.
+const MAX_DESCRIPTION = 1024;
+
+function frontmatter(name, description, triggers, extra) {
+  if (typeof description === 'string' && description.length > MAX_DESCRIPTION) {
+    throw new Error(`skill "${name}": description is ${description.length} chars, over the ${MAX_DESCRIPTION}-char limit — shorten it in the source rather than shipping a silently truncated one`);
+  }
+  const lines = ['---', `name: ${yamlScalar(name)}`, `description: ${yamlScalar(description)}`,
+    `triggers: ${yamlScalar(triggers)}`];
+  // Carry client-specific metadata (any non-standard source key) through verbatim as real
+  // YAML, in a stable (sorted) order so the emitted frontmatter is deterministic.
+  if (extra && typeof extra === 'object') {
+    for (const k of Object.keys(extra).sort()) {
+      lines.push(...yamlEmit(k, extra[k], 0));
+    }
+  }
+  lines.push('---', '', '');
+  return lines.join('\n');
 }
 
 // Flat <name>/SKILL.md layout: sibling skill X is at ../X/SKILL.md.
@@ -109,10 +172,55 @@ function rewriteRelativeLinks(body) {
   return parts.map((p, i) => (i % 2 === 0 ? rewriteSeg(p) : p)).join('');
 }
 
+// R03: a skill body references repo resources it does NOT carry once installed —
+// `controls/catalog.json`, `controls/profiles/`, `examples/ts-postgres-harness/...`. At the
+// INSTALL TARGET those relative paths are dangling. Rewrite each such reference to a PINNED
+// source URL (immutable at the package version) so it resolves from anywhere. Code is never
+// rewritten; only inline-code resource paths and markdown links are pinned. The controls/
+// resources are ALSO shipped in the package (package.json "files"), but a skill installed
+// into a user's agent dir cannot see the package tree, so the pinned URL is the portable link.
+function pkgVersion() { try { return require(path.join(REPO_ROOT, 'package.json')).version; } catch { return '0.0.0'; } }
+const SOURCE_REPO = 'https://github.com/fintechbear/fintech-compliance-skills';
+function sourceUrl(relPath) { return `${SOURCE_REPO}/blob/v${pkgVersion()}/${relPath}`; }
+const RESOURCE_RE = /\b((?:controls|examples)\/[A-Za-z0-9._/-]+)/g;
+function rewriteResourceRefs(body) {
+  // operate OUTSIDE fenced/inline code (same segmentation as rewriteRelativeLinks)
+  const parts = body.split(/(```[\s\S]*?```|`[^`\n]*`)/g);
+  const rewriteSeg = (seg, isCode) => {
+    if (isCode) {
+      // inside INLINE code we turn a bare resource path into a pinned URL in parentheses after it,
+      // but only for a standalone `controls/...`/`examples/...` chip — never touch code blocks.
+      return seg;
+    }
+    // bare resource paths in prose -> a markdown link to the pinned source
+    return seg.replace(RESOURCE_RE, (m) => `[${m}](${sourceUrl(m)})`);
+  };
+  // isCode is true for odd indices; we leave fenced blocks fully intact, and for inline-code
+  // chips we append a pinned link right after the closing backtick when the chip is a resource.
+  let out = '';
+  for (let i = 0; i < parts.length; i++) {
+    const seg = parts[i];
+    const isCode = i % 2 === 1;
+    if (!isCode) { out += rewriteSeg(seg, false); continue; }
+    // inline/fenced code: keep verbatim, but if an INLINE chip (single backtick) names a resource
+    // path, add a pinned link after it so the reference is reachable without altering the chip.
+    const inlineChip = /^`([^`\n]+)`$/.exec(seg);
+    if (inlineChip && /^(controls|examples)\//.test(inlineChip[1].trim())) {
+      const rel = inlineChip[1].trim().replace(/[.,;:)]+$/, '');
+      out += seg + ` ([pinned](${sourceUrl(rel)}))`;
+    } else out += seg;
+  }
+  return out;
+}
+
 // The managed (new-format) body for a skill, without the trailing hash stamp.
 function managedContent(skill) {
-  const { desc, body } = parseSkill(skill.abs);
-  return frontmatter(skill.name, desc, triggersFor(skill)) + rewriteRelativeLinks(body);
+  const parsed = parseSkill(skill.abs);
+  // R08: author-set `name` wins; filename is only the fallback. Body is already
+  // frontmatter-free (parseSkill split it off), so we never emit a second block.
+  const name = parsed.name || skill.name;
+  return frontmatter(name, parsed.desc, triggersFor(skill, parsed), parsed.extraMeta)
+    + rewriteResourceRefs(rewriteRelativeLinks(parsed.body));
 }
 
 // ---------- LEGACY output recognition (for migration) ----------
@@ -550,30 +658,281 @@ function assertCodexInventory(skillsRoot, skills) {
 
 function ask(rl, q) { return new Promise((res) => rl.question(q, (a) => res(a.trim()))); }
 
+// ===================== E: CLI subcommands (list / explain / dry-run / diff / uninstall) =====================
+// Shared: parse flags with an ALLOW-LIST so an unknown flag/command is an ERROR, never a
+// silent install (a typo must not mutate the user's files).
+const GLOBAL_FLAGS = ['--tool', '--target', '--scope', '--home', '--force', '--json', '--help', '-h', '--dry-run', '--profile'];
+const SUBCOMMANDS = ['install', 'list', 'explain', 'diff', 'uninstall'];
+
+function parseCli(args) {
+  const out = { _: [], flags: {}, unknown: [] };
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a.startsWith('-')) {
+      if (!GLOBAL_FLAGS.includes(a)) { out.unknown.push(a); continue; }
+      // boolean flags take no value
+      if (['--force', '--json', '--help', '-h', '--dry-run'].includes(a)) out.flags[a] = true;
+      else { out.flags[a] = args[i + 1]; i++; }
+    } else out._.push(a);
+  }
+  return out;
+}
+
+const CONTROLS_CATALOG = path.join(REPO_ROOT, 'controls', 'catalog.json');
+const PROFILES_DIR = path.join(REPO_ROOT, 'controls', 'profiles');
+function loadCatalogSafe() {
+  try { return JSON.parse(fs.readFileSync(CONTROLS_CATALOG, 'utf8')); } catch { return { controls: [] }; }
+}
+
+// `list`: real content + maintenance/evidence status per skill (not just names).
+function cmdList(flags) {
+  const skills = listSkillFiles();
+  const catalog = loadCatalogSafe();
+  const bySkill = {}; // skill path -> controls citing it
+  for (const c of catalog.controls) for (const sr of (c.skill_refs || [])) {
+    (bySkill[sr] = bySkill[sr] || []).push({ id: c.id, review_status: c.review_status, has_tests: (c.test_refs || []).length > 0 });
+  }
+  const rows = skills.map((s) => {
+    const parsed = parseSkill(s.abs);
+    const refKey = `skills/${s.group}/${s.file}`;
+    const controls = bySkill[refKey] || [];
+    return {
+      name: s.name, group: s.group, file: `skills/${s.group}/${s.file}`,
+      description: parsed.desc,
+      controls: controls.map((c) => c.id),
+      verified_controls: controls.filter((c) => c.review_status === 'verified').length,
+      needs_review_controls: controls.filter((c) => c.review_status === 'needs_review').length,
+      controls_with_tests: controls.filter((c) => c.has_tests).length,
+    };
+  });
+  if (flags['--json']) { console.log(JSON.stringify({ skills: rows }, null, 2)); return 0; }
+  console.log(`fintech-compliance-skills — ${rows.length} skills\n`);
+  for (const r of rows) {
+    console.log(`  ${r.name}  (${r.group})`);
+    console.log(`    ${r.description}`);
+    console.log(`    controls: ${r.controls.join(', ') || '(none)'}`);
+    console.log(`    evidence: ${r.verified_controls} verified, ${r.needs_review_controls} needs-review, ${r.controls_with_tests} with tests\n`);
+  }
+  return 0;
+}
+
+// `explain`: why a PROFILE selects which controls/skills. Obligations are DECLARED, never
+// inferred — if the entity role is not declared, say so instead of guessing.
+function cmdExplain(flags, positional) {
+  const profileArg = flags['--profile'] || positional[0];
+  if (!profileArg) {
+    const avail = fs.existsSync(PROFILES_DIR) ? fs.readdirSync(PROFILES_DIR).filter((f) => f.endsWith('.json')).map((f) => f.replace(/\.json$/, '')) : [];
+    console.error(`explain: name a profile (--profile <id> or a positional id). Available: ${avail.join(', ') || '(none)'}`);
+    return 2;
+  }
+  const pPath = path.join(PROFILES_DIR, `${String(profileArg).replace(/\.json$/, '')}.json`);
+  if (!fs.existsSync(pPath)) { console.error(`explain: profile not found: ${profileArg}`); return 2; }
+  const profile = JSON.parse(fs.readFileSync(pPath, 'utf8'));
+  const catalog = loadCatalogSafe();
+
+  // Selection is EXPLICIT and auditable: a control is selected when the profile's declared
+  // data_categories / stack name a skill the control cites, or the control is a global red line.
+  const roleDeclared = profile.entity_role && profile.entity_role.declared === true;
+  const dataCats = profile.data_categories || [];
+  const stackSkills = [
+    ...((profile.stack && profile.stack.languages) || []).map((l) => `skills/languages/${l}.md`),
+    ...((profile.stack && profile.stack.databases) || []).map((d) => `skills/databases/${d}.md`),
+  ];
+  // map a data category to the skill(s)/control topics it implies (explicit, documented table)
+  const CATEGORY_SKILLS = {
+    pan: ['skills/global/pci-dss.md', 'skills/refusal/refusal-policy.md'],
+    auth_credentials: ['skills/refusal/refusal-policy.md', 'skills/core/secure-fintech-coding.md'],
+    pii_identity: ['skills/core/secure-fintech-coding.md'],
+    kyc_records: ['skills/global/aml-kyc.md'],
+    transaction_records: ['skills/core/secure-fintech-coding.md'],
+  };
+  const wantSkills = new Set([...stackSkills]);
+  const reasons = {}; // skillPath -> why
+  for (const s of stackSkills) reasons[s] = 'declared stack';
+  for (const dc of dataCats) for (const sk of (CATEGORY_SKILLS[dc] || [])) { wantSkills.add(sk); reasons[sk] = (reasons[sk] ? reasons[sk] + ', ' : '') + `data_category:${dc}`; }
+
+  const selected = [];
+  const ambiguities = [];
+  for (const c of catalog.controls) {
+    const refs = c.skill_refs || [];
+    const hit = refs.find((r) => wantSkills.has(r));
+    const isRedLine = c.control_type === 'refusal_red_line';
+    if (hit || isRedLine) {
+      selected.push({ id: c.id, why: hit ? `skill ${hit} (${reasons[hit]})` : 'global red line (applies regardless of profile)', review_status: c.review_status, declared_gate: !hit && !roleDeclared ? 'applies regardless' : undefined });
+    }
+  }
+  if (!roleDeclared) ambiguities.push('entity_role.declared is not true — obligations tied to a regulated ROLE (e.g. MASAK/TCMB duties) are NOT inferred; declare the role to include them.');
+  if (profile.stack && profile.stack.detected === true) ambiguities.push('stack.detected=true — the stack was auto-detected; confirm it matches the real system before relying on language/db-specific controls.');
+  for (const ov of (profile.overlays || [])) ambiguities.push(`overlay '${ov}' is declared — overlay controls are applied SEPARATELY and never silently override base controls.`);
+
+  const result = { profile: profile.profile_id, role_declared: roleDeclared, jurisdictions: profile.jurisdictions || [], selected, ambiguities };
+  if (flags['--json']) { console.log(JSON.stringify(result, null, 2)); return 0; }
+  console.log(`explain profile: ${profile.profile_id}`);
+  console.log(`  role declared: ${roleDeclared ? `yes (${profile.entity_role.kind}/${profile.entity_role.activity})` : 'NO — obligations are not inferred'}`);
+  console.log(`  jurisdictions: ${(profile.jurisdictions || []).join(', ') || '(none declared)'}`);
+  console.log(`  selected ${selected.length} controls:`);
+  for (const s of selected) console.log(`    ${s.id} [${s.review_status}] — ${s.why}`);
+  if (ambiguities.length) { console.log('  AMBIGUITIES / what is NOT inferred:'); for (const a of ambiguities) console.log(`    - ${a}`); }
+  return 0;
+}
+
+// `diff`: show what an install WOULD change, touching NOTHING. Also the engine behind --dry-run.
+function computeInstallDiff(tool, scope, target, home) {
+  const skills = listSkillFiles();
+  const changes = [];
+  if (tool === 'codex') {
+    const treeRoot = path.join(target, CODEX_ROOT);
+    for (const s of skills) {
+      const dest = path.join(treeRoot, 'skills', s.group, s.file);
+      const state = fs.existsSync(dest) ? classify(dest, s) : 'absent';
+      if (state === 'absent') changes.push({ skill: s.name, action: 'create', state });
+      else if (state === 'current') changes.push({ skill: s.name, action: 'unchanged', state });
+      else if (state === 'ours-stale' || state === 'legacy') changes.push({ skill: s.name, action: 'update', state });
+      else if (state === 'user') changes.push({ skill: s.name, action: 'preserve (user-edited)', state });
+    }
+  } else {
+    const base = resolveBase(tool, scope, target, home);
+    for (const s of skills) {
+      const dest = path.join(base, s.name, 'SKILL.md');
+      const state = fs.existsSync(dest) ? classify(dest, s) : 'absent';
+      if (state === 'absent') changes.push({ skill: s.name, action: 'create', state });
+      else if (state === 'current') changes.push({ skill: s.name, action: 'unchanged', state });
+      else if (state === 'ours-stale' || state === 'legacy') changes.push({ skill: s.name, action: 'update', state });
+      else if (state === 'user') changes.push({ skill: s.name, action: 'preserve (user-edited)', state });
+    }
+  }
+  return changes;
+}
+function cmdDiff(flags, tool, scope, target, home) {
+  if (!tool) { console.error('diff: --tool is required (claude|kiro|kiro-crew|codex)'); return 2; }
+  const changes = computeInstallDiff(tool, scope, target, home);
+  const summary = changes.reduce((m, c) => (m[c.action] = (m[c.action] || 0) + 1, m), {});
+  if (flags['--json']) { console.log(JSON.stringify({ tool, target, changes, summary }, null, 2)); return 0; }
+  console.log(`diff — ${tool} @ ${target} (NOTHING is written)\n`);
+  for (const c of changes) console.log(`  ${c.action.padEnd(24)} ${c.skill} (${c.state})`);
+  console.log(`\n  summary: ${Object.entries(summary).map(([k, v]) => `${v} ${k}`).join(', ')}`);
+  return 0;
+}
+
+// `uninstall`: remove ONLY unchanged managed content we own + our own AGENTS block. User edits
+// and unknown files are preserved and reported. Partial failures are recoverable (nothing is
+// force-deleted; a file we cannot confirm as ours is left alone).
+function cmdUninstall(flags, tool, scope, target, home) {
+  if (!tool) { console.error('uninstall: --tool is required'); return 2; }
+  const dryRun = flags['--dry-run'] || flags['--json']; // --json implies read-only preview here
+  const skills = listSkillFiles();
+  const removed = [], preserved = [], unknownKept = [];
+  if (tool === 'codex') {
+    const treeRoot = path.join(target, CODEX_ROOT);
+    const manifestPath = path.join(treeRoot, CODEX_MANIFEST);
+    let manifest = null; try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch { /* none */ }
+    for (const s of skills) {
+      const rel = `skills/${s.group}/${s.file}`;
+      const dest = path.join(treeRoot, rel);
+      if (!fs.existsSync(dest)) continue;
+      const state = classify(dest, s);
+      if (state === 'current') { if (!dryRun) fs.rmSync(dest, { force: true }); removed.push(rel); }
+      else { preserved.push(`${rel} (${state})`); } // user-edited/legacy/unknown: keep
+    }
+    // our AGENTS block: remove only the managed block, keep the user's own text
+    const agentsPath = path.join(target, 'AGENTS.md');
+    if (fs.existsSync(agentsPath)) {
+      const txt = fs.readFileSync(agentsPath, 'utf8');
+      const s = txt.indexOf(BLOCK_START), e = txt.indexOf(BLOCK_END);
+      if (s >= 0 && e > s) {
+        const cleaned = (txt.slice(0, s) + txt.slice(e + BLOCK_END.length)).replace(/\n{3,}/g, '\n\n').replace(/^\s+/, '');
+        if (!dryRun) fs.writeFileSync(agentsPath, cleaned, 'utf8');
+        removed.push('AGENTS.md: managed block (user text preserved)');
+      }
+    }
+  } else {
+    const base = resolveBase(tool, scope, target, home);
+    for (const s of skills) {
+      const dest = path.join(base, s.name, 'SKILL.md');
+      if (!fs.existsSync(dest)) continue;
+      const state = classify(dest, s);
+      if (state === 'current') { if (!dryRun) { fs.rmSync(dest, { force: true }); try { fs.rmdirSync(path.dirname(dest)); } catch { /* non-empty: leave */ } } removed.push(s.name); }
+      else preserved.push(`${s.name} (${state})`);
+    }
+  }
+  const result = { tool, target, removed, preserved, dry_run: !!dryRun };
+  if (flags['--json']) { console.log(JSON.stringify(result, null, 2)); return 0; }
+  console.log(`uninstall — ${tool} @ ${target}${dryRun ? ' (dry-run: nothing written)' : ''}\n`);
+  console.log(`  removed (unchanged managed): ${removed.length}`); for (const r of removed) console.log(`    - ${r}`);
+  console.log(`  preserved (edited/unknown): ${preserved.length}`); for (const p of preserved) console.log(`    - ${p}`);
+  return 0;
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const has = (k) => args.includes(k);
   const flag = (k) => { const i = args.indexOf(k); return i >= 0 ? (args[i + 1] || true) : undefined; };
 
+  // E: subcommand dispatch + strict flag/command parsing. An UNKNOWN flag or command is an
+  // error (exit 2), never a silent install — a typo must not mutate the user's files.
+  const cli = parseCli(args);
+  const cmd = (cli._[0] && SUBCOMMANDS.includes(cli._[0])) ? cli._.shift() : null;
+  if (cli._[0] && !cmd && !SUBCOMMANDS.includes(cli._[0]) && !(has('--help') || has('-h'))) {
+    // a leading positional that is not a known subcommand is a mistake, not an install trigger
+    console.error(`Unknown command "${cli._[0]}". Commands: ${SUBCOMMANDS.join(', ')}. Run --help.`);
+    process.exit(2);
+  }
+  if (cli.unknown.length && !(has('--help') || has('-h'))) {
+    console.error(`Unknown option(s): ${cli.unknown.join(', ')}. Run --help for usage.`);
+    process.exit(2);
+  }
+
   if (has('--help') || has('-h')) {
     console.log(`fintech-compliance-skills
 
-Usage: npx fintech-compliance-skills [--tool TOOL] [--target DIR] [--scope SCOPE] [--home DIR] [--force]
+Usage:
+  npx fintech-compliance-skills [install] [--tool TOOL] [--target DIR] [--scope SCOPE] [--home DIR] [--force] [--dry-run]
+  npx fintech-compliance-skills list [--json]
+  npx fintech-compliance-skills explain --profile <id> [--json]
+  npx fintech-compliance-skills diff --tool TOOL [--target DIR] [--scope SCOPE] [--json]
+  npx fintech-compliance-skills uninstall --tool TOOL [--target DIR] [--scope SCOPE] [--dry-run] [--json]
 
-  --tool    claude | kiro | kiro-crew | codex   (prompted if omitted)
-  --scope   claude: project (default) | user
-            kiro:   global (default, ~/.kiro/skills) | workspace (.kiro/skills in --target)
-  --target  project dir for project/workspace/codex installs (default: current dir)
+Commands:
+  install    (default) install skills into a tool. --dry-run shows changes without writing.
+  list       list skills with their controls + maintenance/evidence status (--json for machine output)
+  explain    explain why a profile selects which controls/skills; obligations are DECLARED, not inferred
+  diff       show what an install WOULD change, writing nothing
+  uninstall  remove only unchanged managed content we own + our AGENTS block; preserve edits/unknown
+
+  --tool    claude | kiro | kiro-crew | codex   (prompted if omitted for install)
+  --scope   claude: project (default) | user ; kiro: global (default) | workspace
+  --target  project dir (default: current dir)
   --home    override home dir (for testing; default: OS home)
   --force   overwrite SKILL.md / managed files even if edited since install
+  --dry-run (install/uninstall) show what would change without writing
+  --json    machine-readable output (list/explain/diff/uninstall)
   --help    show this help
 
-Targets:
-  claude      <target>/.claude/skills/            (or ~/.claude/skills with --scope user)
-  kiro        ~/.kiro/skills/  (global)            (or <target>/.kiro/skills with --scope workspace)
-  kiro-crew   ~/.kiro/crew/skills/
-  codex       <target>/AGENTS.md + <target>/.fintech-compliance-skills/`);
+Every command exits non-zero on error. An unknown flag or command never starts an install.`);
     return;
+  }
+
+  // read-only / preview subcommands
+  const home0 = cli.flags['--home'] ? String(cli.flags['--home']) : os.homedir();
+  const target0 = cli.flags['--target'] ? expandHome(String(cli.flags['--target']), home0) : process.cwd();
+  const scope0 = cli.flags['--scope'] ? String(cli.flags['--scope']) : undefined;
+  const tool0 = cli.flags['--tool'] ? String(cli.flags['--tool']) : undefined;
+  const KNOWN0 = ['claude', 'kiro', 'kiro-crew', 'codex'];
+  if (tool0 && !KNOWN0.includes(tool0)) { console.error(`Unknown --tool "${tool0}". Supported: ${KNOWN0.join(', ')}.`); process.exit(2); }
+
+  if (cmd === 'list') process.exit(cmdList(cli.flags));
+  if (cmd === 'explain') process.exit(cmdExplain(cli.flags, cli._));
+  if (cmd === 'diff') process.exit(cmdDiff(cli.flags, tool0, scope0, target0, home0));
+  if (cmd === 'uninstall') process.exit(cmdUninstall(cli.flags, tool0, scope0, target0, home0));
+
+  // install (default). --dry-run prints the diff and writes nothing.
+  if (cli.flags['--dry-run']) {
+    if (!tool0) { console.error('install --dry-run: --tool is required for a non-interactive dry run'); process.exit(2); }
+    const changes = computeInstallDiff(tool0, scope0, target0, home0);
+    if (cli.flags['--json']) { console.log(JSON.stringify({ tool: tool0, target: target0, dry_run: true, changes }, null, 2)); process.exit(0); }
+    console.log(`install --dry-run — ${tool0} @ ${target0} (NOTHING written)\n`);
+    for (const c of changes) console.log(`  ${c.action.padEnd(24)} ${c.skill} (${c.state})`);
+    process.exit(0);
   }
 
   let tool = flag('--tool');
@@ -642,5 +1001,6 @@ if (require.main === module) {
 module.exports = {
   resolveBase, classify, isLegacyOutput, isLegacyCodexFile, managedContent, mergeCodexBlock, rewriteRelativeLinks,
   listSkillFiles, installCodex, installSkillDir, LEGACY_FILE_HASHES,
+  parseFrontmatter, frontmatter, parseSkill, MAX_DESCRIPTION,
   BLOCK_START, BLOCK_END, LEGACY_CODEX_MARKER, LEGACY_CODEX_HEADING, CODEX_ROOT, CODEX_MANIFEST,
 };

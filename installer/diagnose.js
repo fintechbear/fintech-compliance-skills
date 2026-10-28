@@ -37,14 +37,36 @@ function argv(name, def) {
   return i >= 0 && i + 1 < process.argv.length ? process.argv[i + 1] : def;
 }
 const HOME = argv('--home', os.homedir());
-const TARGET = argv('--target', HOME);
+// R07: --target defaults to the CURRENT PROJECT DIRECTORY (cwd), not HOME. Project-scoped
+// installs (e.g. default Claude .claude/skills, Codex AGENTS.md) live under the project the
+// developer is standing in; defaulting to HOME silently missed them. --home stays HOME.
+const TARGET = argv('--target', process.cwd());
 const JSON_OUT = process.argv.includes('--json');
 
 const read = (p) => (fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null);
 
+// R03: a packaged install must carry its catalog. Resolve it from the canonical location
+// next to this file's package root; if it is missing or unparseable, that is a STRUCTURED
+// error (named problem + non-zero exit), NOT an uncaught TypeError/stack trace.
+class ResourceError extends Error {}
+function loadCatalog() {
+  const raw = read(CATALOG);
+  if (raw == null) {
+    throw new ResourceError(`required resource missing: controls/catalog.json not found at ${CATALOG}. ` +
+      `A packaged install must ship it (package.json "files"). Re-install or re-pack.`);
+  }
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch (e) { throw new ResourceError(`controls/catalog.json is not valid JSON (corrupt): ${e.message}`); }
+  if (!parsed || !Array.isArray(parsed.controls)) {
+    throw new ResourceError('controls/catalog.json has no "controls" array (unexpected schema)');
+  }
+  return parsed;
+}
+
 // ---- SOURCE check 1: FCS-id references in skills all resolve to the catalog ----
 function sourceControlRefs() {
-  const catalog = JSON.parse(read(CATALOG));
+  const catalog = loadCatalog();
   const known = new Set(catalog.controls.map((c) => c.id));
   const skills = idx.listSkillFiles();
   const unresolved = []; // { skill, id }
@@ -70,9 +92,13 @@ function sourceControlRefs() {
 
 // ---- INSTALL check: which targets are present, and per-skill status ----
 // Reuses installer classify(): 'absent' | 'current' | 'ours-stale' | 'user' | 'legacy'.
+// R07: enumerate the SAME tool/scope matrix the installer supports — not just user scope —
+// so a default project-scoped Claude install is discovered, not silently missed.
 const SKILL_TARGETS = [
+  { tool: 'claude', scope: 'project', label: 'claude (project)' },
   { tool: 'claude', scope: 'user', label: 'claude (user)' },
   { tool: 'kiro', scope: 'user', label: 'kiro (home)' },
+  { tool: 'kiro', scope: 'workspace', label: 'kiro (workspace)' },
   { tool: 'kiro-crew', scope: 'user', label: 'kiro-crew' },
 ];
 
@@ -90,15 +116,125 @@ function installStatus() {
       tally[state] = (tally[state] || 0) + 1;
       if (state === 'ours-stale' || state === 'legacy') details.push({ skill: s.name, state });
     }
-    out.push({ ...t, base, present: true, installed: skills.length - tally.absent, tally, details });
+    const installedCount = skills.length - tally.absent;
+    // A base DIRECTORY that exists but holds NONE of our skills is NOT an install — report
+    // it as not-present rather than a hollow "present with 0 current" (which read as OK before).
+    if (installedCount === 0) { out.push({ ...t, base, present: false }); continue; }
+    // A partial install (some of our skills present, some absent) is a BROKEN install, not a
+    // clean one: the tree was deleted/truncated under us. Surface it and fail.
+    const partial = tally.absent > 0;
+    out.push({ ...t, base, present: true, installed: installedCount, tally, details, partial });
   }
-  // Codex: AGENTS.md + tree presence (managed block detection, not per-skill classify).
+  out.push(codexStatus());
+  return out;
+}
+
+// R07: Codex is a tree + manifest, not a single file. A managed block in AGENTS.md with a
+// deleted/truncated/corrupt skill tree is a BROKEN install, not "present/OK". Verify the
+// tree against the installer's own manifest v2 contract: every `managed` relKey must exist
+// on disk with the recorded hash; `userEdited` entries are PRESERVED (reported, never
+// "repaired"); extra/unknown files are user files and left alone.
+function codexStatus() {
   const agentsPath = path.join(TARGET, 'AGENTS.md');
   const agents = read(agentsPath);
-  const codexPresent = agents != null && agents.includes(idx.BLOCK_START);
-  out.push({ tool: 'codex', label: 'codex', base: agentsPath, present: codexPresent,
-    note: codexPresent ? 'managed block present' : 'no managed block in AGENTS.md' });
-  return out;
+  const blockPresent = agents != null && agents.includes(idx.BLOCK_START);
+  const treeRoot = path.join(TARGET, idx.CODEX_ROOT);
+  const manifestPath = path.join(treeRoot, idx.CODEX_MANIFEST);
+  const sha = (s) => require('crypto').createHash('sha256').update(s, 'utf8').digest('hex').slice(0, 16);
+
+  if (!blockPresent && !fs.existsSync(treeRoot)) {
+    return { tool: 'codex', label: 'codex', base: agentsPath, present: false, note: 'not installed' };
+  }
+  // From here a managed block OR a tree exists, so SOMETHING claims to be installed.
+  const issues = [];      // broken-install problems (cause exit != 0)
+  const userEditedList = []; // preserved edits (reported, not errors)
+  let managedOk = 0, managedTotal = 0;
+
+  if (blockPresent && !fs.existsSync(treeRoot)) {
+    issues.push('AGENTS.md has the managed block but the skill tree is MISSING (deleted)');
+  }
+  if (!blockPresent && fs.existsSync(treeRoot)) {
+    issues.push('skill tree exists but AGENTS.md has no managed block (half-removed)');
+  }
+  let manifest = null;
+  if (fs.existsSync(treeRoot)) {
+    const rawM = read(manifestPath);
+    if (rawM == null) {
+      issues.push(`manifest ${idx.CODEX_MANIFEST} missing — cannot verify tree integrity`);
+    } else {
+      try { manifest = JSON.parse(rawM); } catch { issues.push('manifest is not valid JSON (corrupt)'); }
+    }
+  }
+  // R07: the manifest being self-consistent is NOT enough. Validate its schema/version, then
+  // cross-check it against the EXPECTED inventory (the source skills that an install must carry)
+  // and against the AGENTS.md references — a file deleted from BOTH disk and the manifest, while
+  // AGENTS still points at it, must read as BROKEN, not healthy.
+  if (manifest) {
+    if (manifest.version !== undefined && manifest.version !== 2) {
+      issues.push(`manifest version ${JSON.stringify(manifest.version)} is not the supported v2`);
+    }
+    if (typeof manifest.managed !== 'object' || manifest.managed === null) {
+      issues.push('manifest has no managed map (unexpected schema) — cannot verify integrity');
+    }
+    // path-traversal / symlink guard: a managed/userEdited key must stay inside the tree.
+    for (const relKey of [...Object.keys(manifest.managed || {}), ...Object.keys(manifest.userEdited || {})]) {
+      const abs = path.resolve(treeRoot, relKey);
+      const rel = path.relative(treeRoot, abs);
+      if (rel.startsWith('..') || path.isAbsolute(rel)) { issues.push(`manifest key escapes the tree (path traversal): ${relKey}`); continue; }
+      try { const st = fs.lstatSync(abs); if (st.isSymbolicLink()) issues.push(`managed path is a symlink (refused): ${relKey}`); } catch { /* missing handled below */ }
+    }
+  }
+  if (manifest && manifest.managed && typeof manifest.managed === 'object') {
+    for (const [relKey, wantHash] of Object.entries(manifest.managed)) {
+      managedTotal++;
+      const abs = path.join(treeRoot, relKey);
+      const cur = read(abs);
+      if (cur == null) { issues.push(`managed file deleted: ${relKey}`); continue; }
+      const got = sha(cur);
+      if (got !== wantHash) {
+        const ue = manifest.userEdited && manifest.userEdited[relKey];
+        if (ue && ue === got) userEditedList.push(relKey);
+        else issues.push(`managed file content changed (stale/corrupt): ${relKey}`);
+      } else managedOk++;
+    }
+    for (const [relKey, h] of Object.entries(manifest.userEdited || {})) {
+      const cur = read(path.join(treeRoot, relKey));
+      if (cur != null && sha(cur) === h && !userEditedList.includes(relKey)) userEditedList.push(relKey);
+    }
+    // EXPECTED-INVENTORY cross-check: every source skill that an install is expected to carry
+    // must be covered by the manifest (as managed OR userEdited) AND exist on disk. A skill
+    // deleted from BOTH disk and the manifest is caught HERE — the manifest alone would look fine.
+    const expected = idx.listSkillFiles();
+    const covered = new Set([...Object.keys(manifest.managed || {}), ...Object.keys(manifest.userEdited || {})]);
+    for (const s of expected) {
+      const relKey = `skills/${s.group}/${s.file}`;
+      const onDisk = fs.existsSync(path.join(treeRoot, relKey));
+      const inManifest = covered.has(relKey);
+      if (!inManifest && !onDisk) issues.push(`expected skill missing from BOTH the tree and the manifest: ${relKey}`);
+      else if (!onDisk) issues.push(`expected skill missing on disk: ${relKey}`);
+      else if (!inManifest) issues.push(`expected skill present on disk but absent from the manifest (untracked): ${relKey}`);
+    }
+    // AGENTS.md reference cross-check: if the managed block names a skill path, that file must exist.
+    if (agents) {
+      for (const m of agents.matchAll(/\.fintech-compliance-skills\/(skills\/[a-z0-9-]+\/[a-z0-9-]+\.md)/gi)) {
+        const relKey = m[1];
+        if (!fs.existsSync(path.join(treeRoot, relKey))) issues.push(`AGENTS.md references a skill that is not on disk: ${relKey}`);
+      }
+    }
+  } else if (fs.existsSync(treeRoot) && manifest !== null) {
+    issues.push('manifest has no managed map (unexpected schema) — cannot verify integrity');
+  }
+
+  const healthy = issues.length === 0 && blockPresent && fs.existsSync(treeRoot) && managedTotal > 0;
+  return {
+    tool: 'codex', label: 'codex', base: agentsPath,
+    present: blockPresent || fs.existsSync(treeRoot),
+    healthy, issues, userEdited: userEditedList,
+    managedOk, managedTotal,
+    note: healthy
+      ? `managed block + ${managedOk}/${managedTotal} tree files intact${userEditedList.length ? `, ${userEditedList.length} user-edited (preserved)` : ''}`
+      : (issues[0] || 'incomplete'),
+  };
 }
 
 function main() {
@@ -106,8 +242,12 @@ function main() {
   const inst = installStatus();
 
   const anyStale = inst.some((t) => t.present && t.tally && t.tally['ours-stale'] > 0);
+  // R07: a partial SKILL.md install (tree truncated) and a broken/half-removed Codex install
+  // (managed block but missing/corrupt tree) are BROKEN installs — they must fail, not pass.
+  const anyPartial = inst.some((t) => t.present && t.partial);
+  const codexBroken = inst.some((t) => t.tool === 'codex' && t.present && !t.healthy);
   const sourceBad = src.unresolved.length > 0 || src.legacyCitations.length > 0;
-  const exitCode = sourceBad || anyStale ? 1 : 0;
+  const exitCode = sourceBad || anyStale || anyPartial || codexBroken ? 1 : 0;
 
   if (JSON_OUT) {
     console.log(JSON.stringify({ home: HOME, target: TARGET, source: src, installs: inst, ok: exitCode === 0 }, null, 2));
@@ -126,14 +266,20 @@ function main() {
   console.log('\nINSTALLS (under this home/target)');
   for (const t of inst) {
     if (!t.present) { console.log(`  - ${t.label}: not installed`); continue; }
-    if (t.tool === 'codex') { console.log(`  ✓ ${t.label}: ${t.note}`); continue; }
+    if (t.tool === 'codex') {
+      console.log(`  ${t.healthy ? '✓' : '✗'} ${t.label}: ${t.note}`);
+      for (const iss of (t.issues || [])) console.log(`      ✗ ${iss}`);
+      for (const ue of (t.userEdited || [])) console.log(`      - ${ue}: user-edited (preserved)`);
+      continue;
+    }
     const d = t.tally;
     const flags = [];
     if (d['ours-stale']) flags.push(`${d['ours-stale']} STALE (source newer — re-run installer)`);
     if (d.user) flags.push(`${d.user} user-edited (preserved)`);
     if (d.legacy) flags.push(`${d.legacy} legacy format (migrate with installer)`);
-    if (d.absent) flags.push(`${d.absent} absent`);
-    console.log(`  ${d['ours-stale'] ? '✗' : '✓'} ${t.label}: ${t.installed}/${src.skills} installed, ${d.current} current${flags.length ? '; ' + flags.join(', ') : ''}`);
+    if (d.absent) flags.push(`${d.absent} absent (INCOMPLETE install)`);
+    const bad = d['ours-stale'] > 0 || t.partial;
+    console.log(`  ${bad ? '✗' : '✓'} ${t.label}: ${t.installed}/${src.skills} installed, ${d.current} current${flags.length ? '; ' + flags.join(', ') : ''}`);
     for (const x of t.details) console.log(`      - ${x.skill}: ${x.state}`);
   }
 
@@ -142,4 +288,17 @@ function main() {
   process.exit(exitCode);
 }
 
-main();
+try {
+  main();
+} catch (e) {
+  if (e instanceof ResourceError) {
+    // Structural, actionable error — not a stack trace. Non-zero exit.
+    if (process.argv.includes('--json')) {
+      console.log(JSON.stringify({ ok: false, error: 'resource_error', message: e.message }, null, 2));
+    } else {
+      console.error('RESOURCE ERROR: ' + e.message);
+    }
+    process.exit(2);
+  }
+  throw e; // genuinely unexpected: let it surface
+}

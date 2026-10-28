@@ -1,0 +1,29 @@
+{
+  "schema": "fcs-release-scope/2",
+  "review_base_sha": "ff4b491974503d8b70db2c73e5c1200bbaa780f2",
+  "evidence_subject": "Full github.sha and per-job results emitted by current Verify release-evidence artifact",
+  "cli_tests": {
+    "status": "NOT_RUN",
+    "reason": "explicit owner exclusion 2026-10-28",
+    "includes": [
+      "installer",
+      "doctor",
+      "packed artifact CLI smoke",
+      "Claude/Codex/Kiro runtime",
+      "40x3 live-agent evaluation"
+    ]
+  },
+  "required_gates": [
+    "module OS/Node matrix",
+    "control catalog and schema",
+    "grader/config regressions",
+    "negative gate proof",
+    "TypeScript typecheck",
+    "TypeScript real PostgreSQL",
+    "dotnet real PostgreSQL"
+  ],
+  "runtime_agent_isolation": "UNVERIFIED; only profile configuration tested",
+  "agent_effectiveness": "NOT_CLAIMED",
+  "provider_integration": "labelled doubles; no live provider sandbox",
+  "publication": "not performed by this remediation"
+}

@@ -15,6 +15,9 @@
     "installer/index.js",
     "installer/diagnose.js",
     "skills/",
+    "controls/catalog.json",
+    "controls/schema/",
+    "controls/profiles/",
     "README.md",
     "LICENSE"
   ],
@@ -39,6 +42,10 @@
   },
   "license": "Apache-2.0",
   "devDependencies": {
+    "@iarna/toml": "^2.2.5",
+    "quickjs-emscripten": "^0.31.0"
+  },
+  "dependencies": {
     "js-yaml": "^4.3.2"
   }
 }
