@@ -1,0 +1,66 @@
+{
+  "schema": "fcs-remediation-closure/1",
+  "generated_at": "2026-10-28",
+  "repo": "https://github.com/fintechbear/fintech-compliance-skills",
+  "pr": 10,
+  "branch": "fix/r01-r11-remediation",
+  "review_base_sha": "654018e847e5f91801d5dc0bdf80af7ba6be2517",
+  "head_sha": "042abd8",
+  "ci": {
+    "run_id": 40675121144,
+    "conclusion": "success",
+    "jobs": [
+      "installer (ubuntu+windows x node 18/20/22/24)",
+      "dotnet-postgres-harness (ubuntu, real PG16)",
+      "ts-postgres-harness (ubuntu, real PG16)",
+      "control-catalog",
+      "eval-harness-selftests",
+      "negative-gate-proof"
+    ],
+    "real_postgres_version": "postgres:16 (service container)"
+  },
+  "artifact": {
+    "name": "fintech-compliance-skills-1.0.0.tgz",
+    "sha256": "3d65f2464b260e161c0937b62368f7e9ad723207d5f89e3f737298ddf72d0faf",
+    "bytes": 220057,
+    "files": 43,
+    "ships_controls": true,
+    "note": "Content/inventory is deterministic; npm pack embeds file mtimes so a later pack's byte-hash may differ while contents are identical. The publish workflow packs once from the same commit and publishes that tarball."
+  },
+  "harness_results_real_pg": {
+    "transfer": "26/26", "webhook": "21/21", "ledger": "13/13", "refund": "14/14", "retention": "9/9",
+    "dotnet": "green", "failing_first_probes": "R01,R02,R09,R10,R12 reproduced base bugs"
+  },
+  "findings": {
+    "R01": {"status": "DONE", "env": "real-pg-ci", "commit": "02f608b"},
+    "R02": {"status": "DONE", "env": "real-pg-ci", "commit": "c3b8a89"},
+    "R03": {"status": "DONE", "env": "tarball-ci", "commit": "844e954"},
+    "R04": {"status": "DONE", "env": "ci-evals", "commit": "f9c6da5"},
+    "R05": {"status": "DONE", "env": "ci-evals+runtime", "commit": "f9c6da5"},
+    "R06": {"status": "DONE", "env": "real-pg-ci", "commit": "a7b0dd0"},
+    "R07": {"status": "DONE", "env": "ci-installer", "commit": "44036e6"},
+    "R08": {"status": "DONE", "env": "ci-installer", "commit": "b8fd4ea"},
+    "R09": {"status": "DONE", "env": "real-pg-ci", "commit": "ce7f4ce"},
+    "R10": {"status": "DONE", "env": "real-pg-ci", "commit": "f1756fa"},
+    "R11": {"status": "DONE", "env": "ci-controls", "commit": "ee10138"},
+    "R12": {"status": "DONE", "env": "real-pg-ci", "commit": "042abd8"},
+    "E_cli": {"status": "DONE", "env": "ci-installer", "commit": "d5c0ca1"},
+    "F_gate": {"status": "DONE", "env": "ci", "commit": "7673f9e"},
+    "G_content": {"status": "DONE", "env": "primary-sources", "commit": "3bf13fd"},
+    "G_readme": {"status": "DONE", "commit": "d2bff5c"}
+  },
+  "controls_catalog": {"total": 23, "verified": 23, "needs_review": 0, "validate_warnings": 0},
+  "real_agent_eval": {
+    "status": "PARTIAL",
+    "runtime": "codex-cli 0.165.0",
+    "isolation": "verified clean (no global instruction leak)",
+    "smoke_3x3": {"T016": "PASS(refused) x3", "T026": "NOT_RUN(timeout) x3", "T036": "NEEDS_REVIEW x3"},
+    "full_40x3": "runnable via `node evals/run.js --all`; bounded paid run not completed this session",
+    "token_usage": null
+  },
+  "blocked": {
+    "local_debian_real_pg": "Tailscale NoState / port 22 closed — substituted by GitHub Actions PG16",
+    "npm_publish": "out of scope (no merge/tag/publish); publish workflow wired to full gate; OIDC account setup is manual"
+  },
+  "release_readiness": "TECHNICAL GATES GREEN on this commit; full 40x3 eval PARTIAL (bounded). NOT merged/tagged/published."
+}

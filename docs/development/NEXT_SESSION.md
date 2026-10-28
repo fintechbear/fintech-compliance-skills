@@ -1,46 +1,37 @@
-# Next session handoff
+# Next session
 
-## Where we are
+**State:** R01–R12 + A–G remediation on `fix/r01-r11-remediation` (PR #10, DRAFT). HEAD `042abd8`.
+Full Verify gate GREEN on real Windows + Linux + real PostgreSQL 16 — CI run **40675121144**.
+All 23 controls verified vs primary sources; `validate-controls` 0 warnings. Nothing merged/tagged/published.
 
-- Branch: **`fintech-skills-evolution`** (based off PR #7 head `6fc6e9b`; PR #7 is the
-  unmerged dependency base — do NOT modify the PR #7 branch).
-- Frozen comparison reference: `6fc6e9be03f85cd743b99bc7ca1c7a3ca9d2b601`.
-- Read first, in order: `docs/development/WORK_CONTRACT.md`, `PLAN.md`, `STATE.json`.
-- P00 is **PASS** (branch, inventory, access probe, continuity records, baseline tests).
+## What remains (explicit, bounded)
 
-## Environment quick facts
+1. **Full 40×3 scored agent eval** (currently PARTIAL). The real 3×3 smoke is done and proves the
+   path (real codex, isolated CODEX_HOME, grader). To finish the matrix:
+   - `node evals/run.js --all` against real `codex-cli` with an authorized budget.
+   - Raise the per-task timeout above 150s for the slow task classes (T026 timed out at 150s).
+   - Keep ≤120 calls, no new quota, no unlimited retries. Re-grade only affected tasks after fixes.
+   - Record runtime/model/timeout/permission-failure/truncation visibly; a critical FAIL must not be
+     hidden by an average; qualitative results judged for real (no keyword auto-PASS of own output).
+   - Add the runtime read-isolation sentinel test (allowed sentinel readable; forbidden prep/grader
+     sentinel NOT readable through the agent's own tool path) — the config-leak isolation is already
+     proven by `eval-harness-selftests`.
 
-- Windows host: `claude`/`codex`/`kiro` CLIs present (auth unconfirmed), Node v24, .NET 10, Docker.
-- `debian-test`: Debian 13, Docker 29.8.1, .NET 10.0.401, PostgreSQL via `postgres:16`
-  container; **no system Node** (use `node:NN` containers), **no agent CLI**.
-- Private connection details are NOT in the repo; they were provided out of band.
+2. **Release action** (out of scope here by rule 11): once a human authorizes it,
+   - tag `v1.0.0` (publish.yml waits for the full gate, packs once, publishes that tarball);
+   - configure the npm Trusted Publisher (OIDC) or `NPM_TOKEN` — a manual, out-of-band step.
 
-## Current phase: P08 (final) — PARTIAL
+3. **Local Debian real-PG** was down this cycle; if it returns, the TS/.NET harnesses + baseline
+   probes can also be run there for an independent second real-DB confirmation (CI PG16 already covers it).
 
-P00–P07 all PASS. P08 deterministic end-to-end gate is GREEN (grader 10/10, adapter 5/5,
-isolation 8/8, controls 23/33/0, citation idempotent, installer verify + 27/27, diagnose 9/9;
-new CI job `eval-harness-selftests`). Config-isolation prerequisite from P02 is CLOSED
-(`prepareCodexHome` + `isolation.selftest` 8/8; empirically auth-only→401, auth+config→real
-completion). The grader was hardened after a REAL agent refusal (typographic apostrophe
-U+2019) was a false-negative; re-grade → PASS.
+## Do NOT
+- Do not mark the full eval or release as done without the above.
+- Do not merge/tag/publish without explicit authorization.
+- Do not regenerate historical fixtures (`installer/fixtures/`); add a new fixture for a new format.
+- Do not set a control `verified` without a primary-source check (dates alone are not a review).
 
-The ONLY open item is the **full 40×3 scored eval**, NOT_RUN this cycle:
-- Agent latency: codex on this host hits the 150–160s timeout on most calls (one T016
-  CANDIDATE returned in 60s and PASSed); a 120-call matrix can't complete reliably here.
-- Account/cost: ~14k tokens/call, no budget authorized; Claude BLOCKED (low credit).
-
-To finish P08 when capacity/budget allow: `node evals/run.js --all` (isolated home, deterministic
-grader, already wired). Record the run id + a cleaned summary (raw outputs are gitignored).
-Then decide PR #8 readiness — it stays a draft off the unmerged PR #7 base (`6fc6e9b`); merge
-is gated on PR #7 landing first.
-
-
-
-## How to run things
-
-- Installer tests: `npm ci && node installer/verify.js && node --test installer/test.js`.
-- Harness on `debian-test`: `examples/dotnet-postgres-harness/run.sh` (Docker PostgreSQL,
-  loopback-only, task-scoped; cleans up its own container).
-- SSH options that pass CI policy here: `-o StrictHostKeyChecking=accept-new
-  -o NumberOfPasswordPrompts=0 -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no`
-  (never `BatchMode` in a command that also names an `/etc` path — it trips a chmod rule).
+## Key pointers
+- Closure: `docs/development/CLOSURE_REPORT.md`; matrix: `ACCEPTANCE_MATRIX.md`; machine manifest:
+  `result-manifest.json`; eval: `EVAL_REPORT.md`; source reviews: `review-{pci,standards,law}.md`.
+- Real-PG harnesses: `examples/ts-postgres-harness/` (+ `baseline-regression.sh` failing-first probes),
+  `examples/dotnet-postgres-harness/`. CLI + doctor: `installer/index.js`, `installer/diagnose.js`.
