@@ -76,6 +76,24 @@ try {
   ok(!/developer_instructions|model_instructions_file|mcp_servers|\[profiles/.test(writtenCfg),
     'written config.toml has no instruction surfaces');
 
+  // ---- R05: a provider section with an INLINE COMMENT must still be kept ----
+  const commented = [
+    'model = "gpt-x"',
+    'model_provider = "p"',
+    'approval_policy = "never"            # global permissive — MUST NOT be inherited',
+    'sandbox_mode = "danger-full-access"  # global permissive — MUST NOT be inherited',
+    '[model_providers.p] # provider connection',   // inline comment broke the old section regex
+    'name = "p"            # comment after a value',
+    'base_url = "https://api.example/v1"',
+  ].join('\n');
+  const synC = synthMinimalConfig(commented);
+  ok(/\[model_providers\.p\]/.test(synC.text), 'R05: commented [model_providers.p] section is kept (inline comment stripped)');
+  ok(/base_url = "https:\/\/api\.example\/v1"/.test(synC.text), 'R05: provider base_url under a commented section is kept');
+  ok(/name = "p"/.test(synC.text) && !/comment after a value/.test(synC.text), 'R05: inline comment stripped from a value line, value kept');
+  ok(!/danger-full-access/.test(synC.text), 'R05: global permissive sandbox_mode is NOT inherited');
+  ok(synC.text.includes('sandbox_mode = "read-only"'), 'R05: eval writes its OWN explicit sandbox_mode (read-only)');
+  ok(synC.text.includes('approval_policy = "never"') && synC.permissions.approval_policy === '"never"', 'R05: eval declares its OWN approval_policy explicitly (not inherited)');
+
   // ---- negative: assertNoGlobalLeak MUST catch an instruction key if one survived ----
   const tampered = path.join(tmp, 'tampered-home');
   fs.mkdirSync(tampered, { recursive: true });

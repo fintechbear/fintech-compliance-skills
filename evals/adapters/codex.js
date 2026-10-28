@@ -40,25 +40,50 @@ const CONFIG_INSTRUCTION_KEYS = [
   'notify', 'hooks', 'hook', 'mcp_servers', 'mcp', 'profiles', 'profile',
   'projects', 'trust', 'plugins', 'skills', 'rules', 'memories',
 ];
-// The only top-level scalar keys we keep: provider selection + model. Provider CONNECTION
-// details live in a [model_providers.*] table, kept wholesale (minus instruction keys).
-const CONFIG_ALLOW_KEYS = ['model', 'model_provider', 'model_reasoning_effort', 'approval_policy', 'sandbox_mode'];
+// The only top-level scalar keys we keep from the GLOBAL config: provider selection + model.
+// Provider CONNECTION details live in a [model_providers.*] table, kept wholesale (minus
+// instruction keys). NOTE: approval_policy and sandbox_mode are deliberately NOT carried from
+// the global config — the eval must define its OWN explicit, auditable permissions rather than
+// inherit a permissive personal setting (R05). synthMinimalConfig adds them with safe defaults.
+const CONFIG_ALLOW_KEYS = ['model', 'model_provider', 'model_reasoning_effort'];
+
+// The eval's OWN permission posture, written explicitly into every synthesised config so a
+// personal `sandbox_mode = "danger-full-access"` / `approval_policy = "never"` can never leak
+// in and silently widen what the evaluated agent may do. These are the declared eval perms.
+const EVAL_PERMISSIONS = {
+  approval_policy: '"never"',        // non-interactive run; the eval drives the agent unattended
+  sandbox_mode: '"read-only"',       // the agent answers a prompt; it must not write/network out
+};
+
+// Strip a TOML inline comment (a # not inside a quoted string) from a line. This is what made
+// `[model_providers.p] # provider connection` fall through the old section regex and DROP the
+// provider wiring (R05). Quotes are tracked so a # inside a value string is preserved.
+function stripInlineComment(line) {
+  let inS = false, inD = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === "'" && !inD) inS = !inS;
+    else if (ch === '"' && !inS) inD = !inD;
+    else if (ch === '#' && !inS && !inD) return line.slice(0, i);
+  }
+  return line;
+}
 
 // Minimal TOML reader/writer for the SUBSET codex config uses: top-level scalars and
-// [section]/[a.b] tables of scalars. Not a general TOML parser — unknown complex values are
-// dropped (conservative: when unsure, we keep LESS, never more). Good enough to strip
-// instruction surfaces while preserving provider wiring.
+// [section]/[a.b] tables of scalars, now comment-tolerant. Not a general TOML parser — unknown
+// complex values are dropped (conservative: when unsure, keep LESS, never more). Good enough to
+// strip instruction surfaces while preserving provider wiring, even with inline comments.
 function synthMinimalConfig(tomlText) {
   const lines = String(tomlText).split(/\r?\n/);
   const out = [];
   let section = '';               // current [table] path, '' = top level
   let keepSection = true;         // whether the current section is provider wiring we keep
-  const isProviderSection = (s) => /^model_providers\b/.test(s) || s === '' ;
+  const isProviderSection = (s) => /^model_providers\b/.test(s) || s === '';
   const kept = { providers: [], topKeys: [] };
   for (const raw of lines) {
-    const line = raw.replace(/\s+$/, '');
+    const line = stripInlineComment(raw).replace(/\s+$/, '');
     const t = line.trim();
-    if (!t || t.startsWith('#')) continue;
+    if (!t) continue;
     const sec = t.match(/^\[([^\]]+)\]$/);
     if (sec) {
       section = sec[1].trim();
@@ -69,8 +94,10 @@ function synthMinimalConfig(tomlText) {
     const kv = t.match(/^([A-Za-z0-9_.-]+)\s*=\s*(.*)$/);
     if (!kv) continue;
     const key = kv[1];
-    // drop any instruction-bearing key anywhere
+    // drop any instruction-bearing key anywhere; also drop a permission key from the global
+    // config — the eval sets its OWN below, so a permissive personal value cannot leak in.
     if (CONFIG_INSTRUCTION_KEYS.includes(key)) continue;
+    if (key === 'approval_policy' || key === 'sandbox_mode') continue;
     if (section === '') {
       if (!CONFIG_ALLOW_KEYS.includes(key)) continue; // top-level: allow-list only
       out.push(`${key} = ${kv[2]}`); kept.topKeys.push(key);
@@ -78,7 +105,9 @@ function synthMinimalConfig(tomlText) {
       out.push(`${key} = ${kv[2]}`);           // inside a kept provider table
     }
   }
-  return { text: out.join('\n') + '\n', kept };
+  // write the eval's OWN explicit permissions at the top level (declared, not inherited).
+  const header = Object.entries(EVAL_PERMISSIONS).map(([k, v]) => `${k} = ${v}`);
+  return { text: header.concat(out).join('\n') + '\n', kept, permissions: { ...EVAL_PERMISSIONS } };
 }
 
 // Build a clean CODEX_HOME under baseDir; returns { dest, kept }. Throws if no global auth.

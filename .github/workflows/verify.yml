@@ -147,6 +147,8 @@ jobs:
           node-version: '22'
       - name: Deterministic grader self-test
         run: node evals/grader.js
+      - name: Eval tasks validate against task.schema.json (R11/D4)
+        run: node evals/validate-tasks.js
       - name: Codex adapter state self-test (no LLM)
         run: node evals/adapters/codex.selftest.js
       - name: Config-isolation self-test (no global instruction leak)
