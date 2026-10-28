@@ -178,7 +178,8 @@ async function main() {
       { account: 'C', amountMinor: '9007199254740991' },
       { account: 'D', amountMinor: '1' },
     ]);
-    return rej && typeof id === 'number';
+    // pg may return bigserial id as a string; success = rejected the bad one AND got an id back
+    return rej && id != null;
   });
   await check('R06: an int64-overflowing leg is rejected (not silently wrapped)', async () => {
     let rej = false;
