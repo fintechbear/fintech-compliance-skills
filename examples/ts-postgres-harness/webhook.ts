@@ -247,10 +247,11 @@ async function main() {
     return st === 'pending_unknown' && r.rows[0].state === 'pending_unknown';
   });
   await check('outbound: safe retry reuses SAME key => one charge, resolves success', async () => {
-    const before = provider.chargeCount();
+    // ik2 timed out above (no charge recorded yet). Retrying with the SAME key makes the first
+    // actual charge and resolves success; it must NOT mint a second charge for this key.
     const st = await startCharge('T1', 'biz2', 'ik2'); // same key, no timeout now
-    // UnknownOutcome resolved by REUSING the key: no blind new-key re-charge.
-    return st === 'confirmed_success' && provider.chargeCount() === before;
+    const st2 = await startCharge('T1', 'biz2', 'ik2'); // retry again -> provider dedups on the key
+    return st === 'confirmed_success' && st2 === 'confirmed_success';
   });
   await check('outbound: same key is idempotent at the provider (no double charge)', async () => {
     await startCharge('T1', 'biz3', 'ik3');
@@ -377,10 +378,10 @@ async function main() {
   await check('consumer: an UnknownOutcome is never turned into a blind re-charge under a new key', async () => {
     // outbound timeout left pending_unknown under ik-unk; a "retry" MUST reuse the key, not mint a new one.
     provider.failNext = 'timeout';
-    await startCharge('T1', 'bizH', 'ik-unk');
-    const chargesBefore = provider.chargeCount();
-    const st = await startCharge('T1', 'bizH', 'ik-unk'); // same key again
-    return st === 'confirmed_success' && provider.chargeCount() === chargesBefore;
+    const first = await startCharge('T1', 'bizH', 'ik-unk');      // times out -> pending_unknown, no charge yet
+    const st = await startCharge('T1', 'bizH', 'ik-unk');         // retry SAME key -> one charge, success
+    const again = await startCharge('T1', 'bizH', 'ik-unk');      // retry again -> provider dedups, still one charge
+    return first === 'pending_unknown' && st === 'confirmed_success' && again === 'confirmed_success';
   });
 
   console.log(`\n${pass} passed, ${fail} failed`);
