@@ -119,7 +119,8 @@ next session; **Codex** — reads `AGENTS.md` automatically at session start.
 Run a static self-check of what is installed:
 
 ```
-npx github:fintechbear/fintech-compliance-skills-doctor
+# run the doctor bin from the package (note: -p selects the package, then the bin name)
+npx -p github:fintechbear/fintech-compliance-skills fintech-compliance-skills-doctor
 # or, in a clone:  node installer/diagnose.js
 ```
 

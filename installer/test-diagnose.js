@@ -145,6 +145,48 @@ try {
   }
 
   fs.rmSync(empty, { recursive: true, force: true });
+
+  // =========================================================================
+  // R03: the PACKAGED doctor (from a real tarball) must ship its resources and
+  // not crash with a TypeError; a missing resource is a structured error + exit!=0.
+  // This tests the TARBALL, not the source checkout (a source-only test is not enough).
+  // =========================================================================
+  {
+    const isWin = process.platform === 'win32';
+    const repoRoot = path.resolve(__dirname, '..');
+    const t = fs.mkdtempSync(path.join(os.tmpdir(), 'fcs-r03-'));
+    const packOut = execFileSync(isWin ? 'npm.cmd' : 'npm', ['pack', '--pack-destination', t],
+      { cwd: repoRoot, stdio: 'pipe', shell: isWin }).toString().trim();
+    const tgz = path.join(t, packOut.split('\n').pop().trim());
+    execFileSync('tar', ['-xzf', tgz, '-C', t], { stdio: 'pipe' });
+    const pkg = path.join(t, 'package');
+    const pkgDoctor = path.join(pkg, 'installer', 'diagnose.js');
+
+    ok(fs.existsSync(path.join(pkg, 'controls', 'catalog.json')), 'R03: packaged tarball ships controls/catalog.json');
+    ok(fs.existsSync(path.join(pkg, 'controls', 'schema', 'control.schema.json')), 'R03: tarball ships controls/schema/');
+    ok(fs.existsSync(path.join(pkg, 'controls', 'profiles')), 'R03: tarball ships controls/profiles/');
+
+    // packaged doctor runs (source-side check) without a TypeError, exit 0 on a clean empty target
+    const empty = path.join(t, 'empty'); fs.mkdirSync(empty);
+    let r = node([pkgDoctor, '--home', empty, '--target', empty, '--json']);
+    ok(r.code === 0, 'R03: packaged doctor runs from the tarball (no TypeError), exit 0');
+    let j; try { j = JSON.parse(r.out); } catch { j = null; }
+    ok(j && j.source && j.source.controls > 0, 'R03: packaged doctor resolved its catalog (controls > 0)');
+
+    // install from the tarball then doctor the install
+    execFileSync(process.execPath, [path.join(pkg, 'installer', 'index.js'), '--tool', 'claude', '--target', path.join(t, 'proj'), '--home', path.join(t, 'proj')], { stdio: 'pipe' });
+    r = node([pkgDoctor, '--home', path.join(t, 'proj'), '--target', path.join(t, 'proj'), '--json']);
+    ok(r.code === 0, 'R03: tarball install + packaged doctor = exit 0');
+
+    // a MISSING catalog is a STRUCTURED error (named + exit 2), not a raw stack trace
+    fs.rmSync(path.join(pkg, 'controls', 'catalog.json'));
+    r = node([pkgDoctor, '--home', path.join(t, 'proj'), '--target', path.join(t, 'proj'), '--json']);
+    ok(r.code === 2, 'R03: missing catalog -> structured exit 2 (not a TypeError crash)');
+    ok(/resource_error|required resource missing/.test(r.out), 'R03: missing catalog names a structured resource error');
+    ok(!/TypeError|Cannot read properties/.test(r.out), 'R03: no raw TypeError/stack trace surfaced');
+    fs.rmSync(t, { recursive: true, force: true });
+  }
+
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }

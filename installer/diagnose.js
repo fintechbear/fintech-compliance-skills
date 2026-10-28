@@ -42,9 +42,28 @@ const JSON_OUT = process.argv.includes('--json');
 
 const read = (p) => (fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null);
 
+// R03: a packaged install must carry its catalog. Resolve it from the canonical location
+// next to this file's package root; if it is missing or unparseable, that is a STRUCTURED
+// error (named problem + non-zero exit), NOT an uncaught TypeError/stack trace.
+class ResourceError extends Error {}
+function loadCatalog() {
+  const raw = read(CATALOG);
+  if (raw == null) {
+    throw new ResourceError(`required resource missing: controls/catalog.json not found at ${CATALOG}. ` +
+      `A packaged install must ship it (package.json "files"). Re-install or re-pack.`);
+  }
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch (e) { throw new ResourceError(`controls/catalog.json is not valid JSON (corrupt): ${e.message}`); }
+  if (!parsed || !Array.isArray(parsed.controls)) {
+    throw new ResourceError('controls/catalog.json has no "controls" array (unexpected schema)');
+  }
+  return parsed;
+}
+
 // ---- SOURCE check 1: FCS-id references in skills all resolve to the catalog ----
 function sourceControlRefs() {
-  const catalog = JSON.parse(read(CATALOG));
+  const catalog = loadCatalog();
   const known = new Set(catalog.controls.map((c) => c.id));
   const skills = idx.listSkillFiles();
   const unresolved = []; // { skill, id }
@@ -230,4 +249,17 @@ function main() {
   process.exit(exitCode);
 }
 
-main();
+try {
+  main();
+} catch (e) {
+  if (e instanceof ResourceError) {
+    // Structural, actionable error — not a stack trace. Non-zero exit.
+    if (process.argv.includes('--json')) {
+      console.log(JSON.stringify({ ok: false, error: 'resource_error', message: e.message }, null, 2));
+    } else {
+      console.error('RESOURCE ERROR: ' + e.message);
+    }
+    process.exit(2);
+  }
+  throw e; // genuinely unexpected: let it surface
+}

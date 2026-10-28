@@ -15,6 +15,9 @@
     "installer/index.js",
     "installer/diagnose.js",
     "skills/",
+    "controls/catalog.json",
+    "controls/schema/",
+    "controls/profiles/",
     "README.md",
     "LICENSE"
   ],
