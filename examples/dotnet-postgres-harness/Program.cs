@@ -48,6 +48,15 @@ await Check("object authz: actor without debit grant is forbidden", async () => 
 await Check("object authz: outsider principal forbidden", async () => (await bank.Transfer(T1, outsider, k(), new(A, B, 1m, "USD"))).Outcome == Outcome.Forbid);
 await Check("tenant isolation: T2 actor cannot name a T1 account (not found in tenant)", async () => (await bank.Transfer(T2, actor, k(), new(A, T2acc, 1m, "USD"))).Outcome == Outcome.NotFound);
 
+// R02: authorization is enforced BEFORE the idempotency replay, so an unauthorized actor
+// presenting another actor's key cannot read back the stored result (no result leak).
+await Check("R02: unauthorized actor replaying another actor's key is Forbid, not Replayed (no result leak)", async () => {
+    var leakKey = k();
+    var posted = await bank.Transfer(T1, actor, leakKey, new(A, B, 1m, "USD"));   // authorized actor posts
+    var leak = await bank.Transfer(T1, outsider, leakKey, new(A, B, 1m, "USD"));  // outsider replays same key
+    return posted.Outcome == Outcome.Posted && leak.Outcome == Outcome.Forbid && leak.TransferId is null;
+});
+
 // ---- idempotency ----
 var ik = k();
 await Check("idempotency: first call posts", async () => (await bank.Transfer(T1, actor, ik, new(A, B, 1m, "USD"))).Outcome == Outcome.Posted);
