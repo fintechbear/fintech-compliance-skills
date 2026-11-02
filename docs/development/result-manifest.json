@@ -10,16 +10,27 @@
   "current_source": {
     "branch": "fix/f01-f16-closure",
     "pr": "https://github.com/fintechbear/fintech-compliance-skills/pull/11",
-    "last_code_commit": "31c1e2f9d04363fb9bbf8442a36211c3294b79d3",
-    "last_code_tree": "dd15654d3fa6b2271f803a66bbeaebd87ee5c782",
+    "last_code_commit": "a12e43ee2aaa203c174dd48ddfbaad8ba8576bb9",
+    "last_code_tree": "5d8656851bc8eec79a9573f8128aa5137438272e",
     "dirty": false,
     "note": "A static file cannot hold its own commit. The authoritative subject is the release-evidence artifact of the Verify run for the PR head."
   },
+  "round3": {
+    "trigger": "owner's independent check of head e936b41 (2026-11-02) rejected the all-closed claim for F01, F04, F12",
+    "previous_claim": { "head": "e936b4194597c35000b9a3f7eabafe0041a4327d", "ci_run": 41496452127, "status": "superseded for F01/F04/F12" },
+    "independent_reviews": [
+      { "round": 3, "subject": "87d1b5e", "F01": "CLOSED", "F04": "OPEN (9 dangerous PASS)", "F12": "OPEN ($ref target)" },
+      { "round": 4, "subject": "7ab3e1e", "F01": "CLOSED", "F04": "OPEN (15 dangerous PASS)", "F12": "OPEN P3 (pure $ref cycle)" },
+      { "round": 5, "subject": "3449cfd", "F01": "CLOSED", "F04": "OPEN (18 dangerous PASS)", "F12": "CLOSED" },
+      { "round": 6, "subject": "7dd57eb", "F04": "CLOSED for P1 (0 of 25 dangerous PASS); 1 safe FAIL fixed in a12e43e" }
+    ],
+    "replay_on_a12e43e": "all 102 round 3-5 inputs and all 45 round 6 inputs: 0 dangerous PASS, 0 safe FAIL"
+  },
   "findings": {
-    "F01": { "priority": "P1", "status": "CONFIRMED_FIXED", "path": "installer/index.js cmdExplain; installer/profile-selector.js", "commits": ["2746c31"], "evidence": "installer/profile-selector.selftest.js", "limit": "coarse selector-owned applicability table" },
+    "F01": { "priority": "P1", "status": "CONFIRMED_FIXED", "round3": "reopened then fixed", "path": "installer/profile-selector.js decideControl; controls/schema/profile.schema.json operations", "commits": ["2746c31", "1d796b8"], "evidence": "installer/profile-selector.selftest.js (35, fails on e936b41); negative gate", "limit": "omitted optional field -> needs_declaration; IDEMP gated on declared operations or provider; activity text never parsed" },
     "F02": { "priority": "P1", "status": "CONFIRMED_FIXED", "path": "skills/languages/csharp-dotnet.md transfer example", "commits": ["f9875df"], "evidence": "installer/skill-inventory.selftest.js ordering (static); .NET real-PG harness", "limit": "illustrative Markdown" },
     "F03": { "priority": "P1", "status": "CONFIRMED_FIXED", "path": "examples/ts-postgres-harness/money.ts", "commits": ["301f1bf"], "evidence": "money.selftest.ts (fails on baseline)", "limit": null },
-    "F04": { "priority": "P1", "status": "CONFIRMED_FIXED", "path": "evals/grader.js refusal branch", "commits": ["8982eeb"], "evidence": "evals/grader.js self-test; negative gate", "limit": "deterministic rules; novel phrasing may need review" },
+    "F04": { "priority": "P1", "status": "CONFIRMED_FIXED", "round3": "reopened then fixed", "path": "evals/grader.js refusal branch", "commits": ["8982eeb", "e3f0103", "c68459d", "cfc5ddb", "3449cfd", "7dd57eb", "a12e43e"], "evidence": "grader self-test (87, fails on e936b41); 4 negative gates; 147 independent-review inputs replayed: 0 dangerous PASS, 0 safe FAIL", "limit": "deterministic rules cannot cover all language; unproven answers are NEEDS_REVIEW, so many genuine safe answers need human review (round 6: 11 of 15)" },
     "F05": { "priority": "P1", "status": "CONFIRMED_FIXED", "path": "installer/codex-ownership.js; installer/index.js computeInstallDiff/cmdUninstall/installCodex", "commits": ["13c18d7"], "evidence": "installer/codex-ownership.selftest.js", "limit": "doctor keeps its own manifest-v2 integrity check" },
     "F06": { "priority": "P1", "status": "CONFIRMED_FIXED", "path": "installer/index.js commitFlatInstall/commitTreeSwap/mergeCodexBlock/removeCodexBlock", "commits": ["0495098", "31c1e2f"], "evidence": "installer/install-txn.selftest.js; installer/agents-block.selftest.js", "limit": "real-filesystem install NOT_RUN" },
     "F07": { "priority": "P1", "status": "CONFIRMED_FIXED", "path": "installer/source.js; installer/stamp-source.js; installer/index.js rewriteResourceRefs/codexFileContent", "commits": ["9e38603"], "evidence": "installer/resource-refs.selftest.js", "limit": "unpinned builds show a note, not a link" },
@@ -27,14 +38,17 @@
     "F09": { "priority": "P1", "status": "CONFIRMED_FIXED", "path": "skills/** (17 country summaries, transfer/aml-kyc/go/rust)", "commits": ["cde759d"], "evidence": "installer/content-consistency.selftest.js", "limit": "no legal-completeness claim" },
     "F10": { "priority": "P2", "status": "CONFIRMED_FIXED", "path": "examples/ts-postgres-harness/refund.ts cancel", "commits": ["225c46e"], "evidence": "real PG: baseline-probes/f10-cancel-race.ts reproduced; 2 race tests pass; refund 19/19; CI run 41487905583", "limit": null },
     "F11": { "priority": "P2", "status": "CONFIRMED_FIXED", "path": "evals/tasks.jsonl T004; evals/release.selftest.js; evals/grader.js", "commits": ["8982eeb", "1ba0aea"], "evidence": "release.selftest.js; grader self-test", "limit": null },
-    "F12": { "priority": "P2", "status": "CONFIRMED_FIXED", "path": "controls/jsonschema.js checkKeywordContracts", "commits": ["ab46002", "1ba0aea"], "evidence": "release.selftest.js; negative gate", "limit": "declared draft-07 subset only" },
+    "F12": { "priority": "P2", "status": "CONFIRMED_FIXED", "round3": "reopened then fixed", "path": "controls/jsonschema.js checkKeywordContracts", "commits": ["ab46002", "1ba0aea", "47ac0c7", "7ab3e1e", "cfc5ddb"], "evidence": "release.selftest.js (14, round-3 cases fail on e936b41); negative gate", "limit": "declared draft-07 subset only; $ref limited to #/definitions/<name>" },
     "F13": { "priority": "P2", "status": "CONFIRMED_FIXED", "path": "controls/evidence.js; controls/validate-controls.js; controls/catalog.json; installer/index.js cmdList", "commits": ["e0904a1"], "evidence": "controls/evidence.selftest.js", "limit": "FCS-RETAIN-001, FCS-EVASION-001 needs_review" },
     "F14": { "priority": "P2", "status": "CONFIRMED_FIXED", "path": "examples/ts-postgres-harness/package.json + lockfile", "commits": ["8176e89"], "evidence": "npm audit 0; tsc --noEmit 0", "limit": "dev-server advisory only" },
     "F15": { "priority": "P2", "status": "CONFIRMED_FIXED", "path": "README.md; package.json; docs/development/RELEASE_CLOSURE.md", "commits": ["197de91", "d071d9c"], "evidence": "test:release:noncli; packed inventory", "limit": null },
     "F16": { "priority": "P1", "status": "CONFIRMED_FIXED", "path": ".github/workflows/publish.yml; .github/scripts/release-guard.js; .github/workflows/verify.yml readiness; SECURITY.md; .github/dependabot.yml", "commits": ["521e95d", "14b3674"], "evidence": "release-guard.selftest.js; negative gate; release-readiness", "limit": "remote protection not applied (draft only)" }
   },
   "commands": [
-    { "cmd": "npm run test:release:noncli", "where": "local", "exit": 0 },
+    { "cmd": "npm run test:release:noncli", "where": "local", "subject": "a12e43e", "exit": 0 },
+    { "cmd": "negative mutations F04x3/F01/F12 on a copy", "where": "local", "subject": "a12e43e", "exit": "each mutated test exits 1" },
+    { "cmd": "Verify workflow", "where": "CI", "run": 41529771678, "subject": "3449cfd", "conclusion": "success", "note": "the run for the head carrying this file is authoritative" },
+    { "cmd": "npm run test:release:noncli", "where": "local", "subject": "31c1e2f", "exit": 0, "historical": true },
     { "cmd": "npx tsc --noEmit", "where": "local examples/ts-postgres-harness", "exit": 0 },
     { "cmd": "npm audit", "where": "local examples/ts-postgres-harness", "exit": 0 },
     { "cmd": "npm pack --dry-run --json", "where": "local", "exit": 0, "entries": 52 },
