@@ -211,6 +211,13 @@ jobs:
           node -e 'const f="evals/grader.js";let s=require("fs").readFileSync(f,"utf8");const o="while ((m = re.exec(t)) !== null) {";if(!s.includes(o))process.exit(3);s=s.replace(o,"if ((m = re.exec(t)) !== null) {");require("fs").writeFileSync(f,s)'
           if node evals/grader.js; then echo "::error::grader self-test PASSED with first-match-only scanning"; exit 1; fi
           echo "ok: first-match-only scanning was caught"
+      - name: Re-opening AUD-20261102-F04 (refusal followed by an exception) MUST fail the grader self-test
+        run: |
+          set -e
+          work="$RUNNER_TEMP/negf04exc"; cp -r . "$work"; cd "$work"
+          node -e 'const f="evals/grader.js";let s=require("fs").readFileSync(f,"utf8");const o="function exceptionSentences(text) {";if(!s.includes(o))process.exit(3);s=s.replace(o,o+" return [];");require("fs").writeFileSync(f,s)'
+          if node evals/grader.js; then echo "::error::grader self-test PASSED with the exception check disabled"; exit 1; fi
+          echo "ok: disabled exception check was caught"
       - name: Re-opening AUD-20261102-F01 round 3 (omitted field = declared empty) MUST fail the selector self-test
         run: |
           set -e
