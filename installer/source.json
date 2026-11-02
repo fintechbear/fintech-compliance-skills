@@ -1,0 +1,5 @@
+{
+  "repo": "https://github.com/fintechbear/fintech-compliance-skills",
+  "commit": null,
+  "note": "Committed default: not pinned. `npm run stamp-source` (npm prepare) writes source.generated.json with the full commit when the packed content is clean."
+}

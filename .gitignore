@@ -16,3 +16,6 @@ Thumbs.db
 node_modules/
 npm-debug.log*
 *.tgz
+
+# AUD-20261102-F07: build-time source identity (written by npm prepare / stamp-source)
+installer/source.generated.json

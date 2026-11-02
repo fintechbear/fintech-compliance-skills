@@ -179,35 +179,38 @@ function rewriteRelativeLinks(body) {
 // rewritten; only inline-code resource paths and markdown links are pinned. The controls/
 // resources are ALSO shipped in the package (package.json "files"), but a skill installed
 // into a user's agent dir cannot see the package tree, so the pinned URL is the portable link.
-function pkgVersion() { try { return require(path.join(REPO_ROOT, 'package.json')).version; } catch { return '0.0.0'; } }
-const SOURCE_REPO = 'https://github.com/fintechbear/fintech-compliance-skills';
-function sourceUrl(relPath) { return `${SOURCE_REPO}/blob/v${pkgVersion()}/${relPath}`; }
-const RESOURCE_RE = /\b((?:controls|examples)\/[A-Za-z0-9._/-]+)/g;
-function rewriteResourceRefs(body) {
-  // operate OUTSIDE fenced/inline code (same segmentation as rewriteRelativeLinks)
-  const parts = body.split(/(```[\s\S]*?```|`[^`\n]*`)/g);
-  const rewriteSeg = (seg, isCode) => {
-    if (isCode) {
-      // inside INLINE code we turn a bare resource path into a pinned URL in parentheses after it,
-      // but only for a standalone `controls/...`/`examples/...` chip — never touch code blocks.
-      return seg;
-    }
-    // bare resource paths in prose -> a markdown link to the pinned source
-    return seg.replace(RESOURCE_RE, (m) => `[${m}](${sourceUrl(m)})`);
-  };
-  // isCode is true for odd indices; we leave fenced blocks fully intact, and for inline-code
-  // chips we append a pinned link right after the closing backtick when the chip is a resource.
+// AUD-20261102-F07: one portability contract for EVERY target (flat SKILL.md and Codex tree).
+// A repo resource reference resolves to an IMMUTABLE full-commit URL taken from the package's
+// explicit source identity (installer/source.js). If this build is not pinned, the reference is
+// kept as text with an explicit "not pinned" note — never a guessed version tag, never main.
+// Fenced code, inline code text and existing Markdown links are never altered.
+const { resolveSource, resourceUrl } = require('./source');
+const RESOURCE_RE = /\b((?:controls|examples)\/[A-Za-z0-9._/-]*[A-Za-z0-9_/-])/g;
+const UNPINNED_NOTE = ' (repo resource; this build is not pinned to a commit — open it at the commit you installed from)';
+function rewriteResourceRefs(body, source = resolveSource()) {
+  // segments: fenced code | inline code | existing markdown link [..](..)  — all kept verbatim
+  const parts = body.split(/(```[\s\S]*?```|`[^`\n]*`|\[[^\]\n]*\]\([^)\n]*\))/g);
+  const link = (rel) => { const u = resourceUrl(source, rel); return u ? `[source](${u})` : null; };
   let out = '';
+  let noted = false;
   for (let i = 0; i < parts.length; i++) {
     const seg = parts[i];
-    const isCode = i % 2 === 1;
-    if (!isCode) { out += rewriteSeg(seg, false); continue; }
-    // inline/fenced code: keep verbatim, but if an INLINE chip (single backtick) names a resource
-    // path, add a pinned link after it so the reference is reachable without altering the chip.
-    const inlineChip = /^`([^`\n]+)`$/.exec(seg);
-    if (inlineChip && /^(controls|examples)\//.test(inlineChip[1].trim())) {
-      const rel = inlineChip[1].trim().replace(/[.,;:)]+$/, '');
-      out += seg + ` ([pinned](${sourceUrl(rel)}))`;
+    if (i % 2 === 0) {
+      // prose: a bare resource path becomes a link (pinned) or gets one note (unpinned)
+      out += seg.replace(RESOURCE_RE, (m) => {
+        const u = resourceUrl(source, m);
+        if (u) return `[${m}](${u})`;
+        if (noted) return m;
+        noted = true; return m + UNPINNED_NOTE;
+      });
+      continue;
+    }
+    const chip = /^`([^`\n]+)`$/.exec(seg);
+    const rel = chip && chip[1].trim().replace(/[.,;:)]+$/, '');
+    if (rel && /^(controls|examples)\//.test(rel)) {
+      const l = link(rel);
+      if (l) out += `${seg} (${l})`;
+      else { out += seg + (noted ? '' : UNPINNED_NOTE); noted = true; }
     } else out += seg;
   }
   return out;
@@ -454,6 +457,12 @@ function installSkillDir(baseDir, skills, { force }) {
   return res;
 }
 
+// F07: the Codex tree gets the SAME resource-reference contract as flat installs. Only Markdown
+// is transformed; the manifest records the hash of exactly what is written.
+function codexFileContent(relKey, buf) {
+  return relKey.endsWith('.md') ? Buffer.from(rewriteResourceRefs(buf.toString('utf8')), 'utf8') : buf;
+}
+
 // ---------- Codex installer ----------
 // Manifest keys are tree-relative INCLUDING the leading `skills/` segment.
 function copyTree(srcRoot, dstRoot, manifest) {
@@ -464,7 +473,7 @@ function copyTree(srcRoot, dstRoot, manifest) {
       const d = path.join(dst, entry.name);
       const r = rel ? `${rel}/${entry.name}` : entry.name;
       if (entry.isDirectory()) walk(s, d, r);
-      else { const data = fs.readFileSync(s); fs.writeFileSync(d, data); manifest[r] = sha(data.toString('utf8')); }
+      else { const data = codexFileContent(r, fs.readFileSync(s)); fs.writeFileSync(d, data); manifest[r] = sha(data.toString('utf8')); }
     }
   };
   walk(srcRoot, dstRoot, 'skills'); // keys become skills/<group>/<file>
@@ -600,13 +609,14 @@ function codexNormKey(k) {
     : k === 'INDEX.md' ? 'skills/INDEX.md' : k;
 }
 // Hash every file of a directory tree as relKey -> sha (same hash as copyTree records).
-function hashTree(root, prefix) {
+function hashTree(root, prefix, transform) {
   const out = {};
   if (!fs.existsSync(root)) return out;
   const walk = (dir, rel) => {
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       const abs = path.join(dir, e.name); const r = rel ? `${rel}/${e.name}` : e.name;
-      if (e.isDirectory()) walk(abs, r); else out[r] = sha(fs.readFileSync(abs, 'utf8'));
+      if (e.isDirectory()) walk(abs, r);
+      else out[r] = sha((transform ? transform(r, fs.readFileSync(abs)) : fs.readFileSync(abs)).toString('utf8'));
     }
   };
   walk(root, prefix);
@@ -617,7 +627,7 @@ function codexPlan(target, mode) {
   const { planCodex } = require('./codex-ownership');
   const treeRoot = path.join(target, CODEX_ROOT);
   const disk = hashTree(path.join(treeRoot, 'skills'), 'skills');
-  const pkg = hashTree(SKILLS_DIR, 'skills');
+  const pkg = hashTree(SKILLS_DIR, 'skills', codexFileContent);   // hash of what install WRITES
   return planCodex({
     disk, pkg, manifestRaw: readIf(path.join(treeRoot, CODEX_MANIFEST)), normKey: codexNormKey, mode,
     isLegacyFor: (relKey) => { const p = path.join(treeRoot, relKey); return fs.existsSync(p) && isLegacyCodexFile(relKey, fs.readFileSync(p, 'utf8')); },
@@ -1070,7 +1080,7 @@ if (require.main === module) {
 }
 
 module.exports = {
-  resolveBase, classify, isLegacyOutput, isLegacyCodexFile, managedContent, mergeCodexBlock, removeCodexBlock, commitFlatInstall, commitTreeSwap, codexPlan, rewriteRelativeLinks,
+  resolveBase, classify, isLegacyOutput, isLegacyCodexFile, managedContent, mergeCodexBlock, removeCodexBlock, commitFlatInstall, commitTreeSwap, codexPlan, codexFileContent, rewriteRelativeLinks,
   listSkillFiles, installCodex, installSkillDir, LEGACY_FILE_HASHES,
   parseFrontmatter, frontmatter, parseSkill, MAX_DESCRIPTION,
   BLOCK_START, BLOCK_END, LEGACY_CODEX_MARKER, LEGACY_CODEX_HEADING, CODEX_ROOT, CODEX_MANIFEST,
