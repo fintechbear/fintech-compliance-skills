@@ -135,6 +135,24 @@ function checkKeywordContracts(schema, where, root, errors) {
   // enum must be a non-empty array; required must be an array of strings.
   if (owns(schema, 'enum') && !(Array.isArray(schema.enum) && schema.enum.length)) errors.push(`${where}: enum must be a non-empty array`);
   if (owns(schema, 'required') && !(Array.isArray(schema.required) && schema.required.every((r) => typeof r === 'string'))) errors.push(`${where}: required must be an array of strings`);
+  // F12 round 3: the SHAPE of every remaining supported keyword. A wrong-typed keyword would
+  // otherwise make its constraint silently disappear (properties: [] enforces nothing).
+  const isMap = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+  for (const k of ['properties', 'definitions']) {
+    if (owns(schema, k) && !isMap(schema[k])) errors.push(`${where}: ${k} must be an object map of subschemas (got ${typeOf(schema[k])})`);
+  }
+  if (owns(schema, 'additionalProperties')) {
+    const ap = schema.additionalProperties;
+    // true/false are enforced; an object subschema is reported by assertSupportedSchema as an
+    // explicit unsupported boundary. Anything else (a string, a number, null, an array) is invalid.
+    if (typeof ap !== 'boolean' && !isMap(ap)) errors.push(`${where}: additionalProperties must be a boolean (got ${typeOf(ap)})`);
+  }
+  if (owns(schema, 'type') && Array.isArray(schema.type) && schema.type.length === 0) errors.push(`${where}: type array must not be empty`);
+  if (owns(schema, 'type') && !Array.isArray(schema.type) && typeof schema.type !== 'string') errors.push(`${where}: type must be a string or an array of strings`);
+  if (owns(schema, 'items') && Array.isArray(schema.items)) errors.push(`${where}: tuple-form items (array) is not supported`);
+  for (const k of ['$id', '$schema', '$comment', 'title', 'description']) {
+    if (owns(schema, k) && typeof schema[k] !== 'string') errors.push(`${where}: ${k} must be a string`);
+  }
 }
 
 // Preflight the entire schema, including optional/unvisited branches, so unsupported
@@ -147,9 +165,11 @@ function checkSchema(schema, where, root, errors, seen = new Set()) {
   assertSupportedSchema(schema, where, errors);
   checkKeywordContracts(schema, where, root, errors);
   for (const key of ['properties', 'definitions']) {
-    for (const [name, sub] of Object.entries(schema[key] || {})) checkSchema(sub, `${where}/${key}/${name}`, root, errors, seen);
+    const map = schema[key];
+    if (!map || typeof map !== 'object' || Array.isArray(map)) continue; // shape error already reported
+    for (const [name, sub] of Object.entries(map)) checkSchema(sub, `${where}/${key}/${name}`, root, errors, seen);
   }
-  if (schema.items !== undefined) checkSchema(schema.items, `${where}/items`, root, errors, seen);
+  if (schema.items !== undefined && !Array.isArray(schema.items)) checkSchema(schema.items, `${where}/items`, root, errors, seen);
 }
 function validate(data, schema) {
   const errors = [];

@@ -111,6 +111,37 @@ test('unsupported schema constraints fail even under absent optional properties'
   a.deepEqual(validate(123, true), []);
   a.notEqual(validate([1], {type:'array',items:false}).length, 0);
 });
+test('F12 round 3: every supported keyword has its shape checked at preflight', () => {
+  // the four counterexamples from the independent review
+  for (const s of [
+    {type:'object',properties:[]},
+    {type:'object',definitions:[]},
+    {type:'object',additionalProperties:'forbid'},
+    {type:'object',additionalProperties:0},
+  ]) a.notEqual(validate({unexpected:1}, s).length, 0, JSON.stringify(s));
+  // more wrong-shape keywords, inside an optional branch the data never visits
+  for (const sub of [
+    {type:'object',properties:null},
+    {type:'object',additionalProperties:null},
+    {type:'object',additionalProperties:[]},
+    {type:[]},
+    {type:7},
+    {type:'array',items:[{type:'string'}]},
+    {type:'string',title:5},
+    {type:'object',properties:{x:{type:'object',definitions:'nope'}}},
+  ]) a.notEqual(validate({}, {type:'object',properties:{optional:sub}}).length, 0, JSON.stringify(sub));
+  // empty map {} is valid; empty array [] is not
+  a.deepEqual(validate({}, {type:'object',properties:{}}), []);
+  a.deepEqual(validate({}, {type:'object',definitions:{}}), []);
+  // additionalProperties true/false keep their meaning; an object subschema stays an explicit boundary
+  a.deepEqual(validate({unexpected:1}, {type:'object',additionalProperties:true}), []);
+  a.notEqual(validate({unexpected:1}, {type:'object',properties:{},additionalProperties:false}).length, 0);
+  a.match(validate({}, {type:'object',additionalProperties:{type:'string'}}).join('\n'), /not supported/);
+  // boolean schemas unchanged
+  a.deepEqual(validate(5, true), []);
+  a.notEqual(validate(5, false).length, 0);
+});
+
 test('F12: invalid keyword contracts fail closed in unvisited optional branches', () => {
   // dangling $ref in an optional property, with data that omits it
   a.notEqual(validate({}, {type:'object',properties:{optional:{$ref:'#/definitions/missing'}}}).length, 0);
