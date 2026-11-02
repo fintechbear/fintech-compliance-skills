@@ -350,6 +350,90 @@ function classify(dest, skill) {
   return isLegacyOutput(skill, prev) ? 'legacy' : 'user';
 }
 
+// ---------- AUD-20261102-F06: transactional commit helpers (fs ops injected for tests) ----------
+const REAL_OPS = {
+  exists: (p) => fs.existsSync(p),
+  mkdirp: (d) => fs.mkdirSync(d, { recursive: true }),
+  writeFile: (p, data) => fs.writeFileSync(p, data, 'utf8'),
+  copyFile: (a, b) => fs.copyFileSync(a, b),
+  rename: (a, b) => fs.renameSync(a, b),
+  rm: (p) => fs.rmSync(p, { recursive: true, force: true }),
+};
+function combinedError(first, extra, recovery) {
+  const msg = [first.message, ...extra.map((x) => `rollback step failed: ${x.message}`)].join('; ')
+    + (recovery.length ? `; recovery copies kept at: ${recovery.join(', ')}` : '');
+  const err = new Error(msg);
+  err.cause = first; err.rollbackErrors = extra; err.recovery = recovery;
+  return err;
+}
+
+// (a) Flat SKILL.md install as one transaction. Phase 1 writes every new file to a temp name
+// (nothing active changes). Phase 2 moves each active file aside to a journal copy, then the temp
+// into place. Any failure restores every already-committed file from its journal copy in reverse.
+// A journal copy is deleted only after its restore (or the whole commit) is proven to succeed.
+function commitFlatInstall(staged, ops = REAL_OPS) {
+  const tmps = [];
+  try {
+    for (const st of staged) {
+      ops.mkdirp(st.dir);
+      if (st.migrate && ops.exists(st.dest) && !ops.exists(st.dest + '.bak')) ops.copyFile(st.dest, st.dest + '.bak'); // never overwrite a user backup
+      const tmp = st.dest + '.fcs-tmp';
+      ops.writeFile(tmp, st.data);
+      tmps.push(tmp);
+    }
+  } catch (e) {
+    const extra = [];
+    for (const t of tmps) { try { ops.rm(t); } catch (x) { extra.push(x); } }
+    throw extra.length ? combinedError(e, extra, []) : e;
+  }
+  const journal = []; // { dest, prev|null }
+  try {
+    for (const st of staged) {
+      let prev = null;
+      if (ops.exists(st.dest)) { prev = st.dest + '.fcs-prev'; ops.rename(st.dest, prev); }
+      journal.push({ dest: st.dest, prev });
+      ops.rename(st.dest + '.fcs-tmp', st.dest);
+      journal[journal.length - 1].done = true;
+    }
+  } catch (e) {
+    const extra = []; const recovery = [];
+    for (const j of journal.slice().reverse()) {
+      try {
+        if (j.done && ops.exists(j.dest)) ops.rm(j.dest);
+        if (j.prev) { ops.rename(j.prev, j.dest); if (!ops.exists(j.dest)) throw new Error(`restore of ${j.dest} not visible`); }
+      } catch (x) { extra.push(x); if (j.prev && ops.exists(j.prev)) recovery.push(j.prev); }
+    }
+    for (const st of staged) { try { if (ops.exists(st.dest + '.fcs-tmp')) ops.rm(st.dest + '.fcs-tmp'); } catch (x) { extra.push(x); } }
+    throw combinedError(e, extra, recovery);
+  }
+  for (const j of journal) if (j.prev) { try { ops.rm(j.prev); } catch { /* committed; leftover journal copy is harmless */ } }
+}
+
+// (b) Codex tree + AGENTS.md swap. The old tree is moved to `backupName`. If the swap fails, every
+// rollback step is attempted independently; the backup is removed ONLY when the restore is proven
+// (the old tree is back at treeDst). Otherwise it is kept and named in the error.
+function commitTreeSwap({ treeDst, stage, agentsTmp, dest, backupName }, ops = REAL_OPS) {
+  let backup = null;
+  if (ops.exists(treeDst)) { ops.rename(treeDst, backupName); backup = backupName; }
+  try {
+    ops.rename(stage, treeDst);
+    ops.rename(agentsTmp, dest);
+  } catch (e) {
+    const extra = [];
+    try { if (ops.exists(agentsTmp)) ops.rm(agentsTmp); } catch (x) { extra.push(x); }
+    if (backup) {
+      let restored = false;
+      try { if (ops.exists(treeDst)) ops.rm(treeDst); } catch (x) { extra.push(x); }
+      try { ops.rename(backup, treeDst); restored = ops.exists(treeDst) && !ops.exists(backup); } catch (x) { extra.push(x); }
+      if (!restored) throw combinedError(e, extra, [backup]);   // backup is the only recovery copy: keep it
+    } else {
+      try { if (ops.exists(treeDst)) ops.rm(treeDst); } catch (x) { extra.push(x); }
+    }
+    throw extra.length ? combinedError(e, extra, []) : e;
+  }
+  if (backup) { try { ops.rm(backup); } catch { /* committed; stale backup is harmless */ } }
+}
+
 function installSkillDir(baseDir, skills, { force }) {
   const res = { installed: 0, migrated: [], skipped: [], unchanged: 0, backups: [] };
   // Stage classification first, then commit, so a mid-run failure leaves the old install intact.
@@ -363,19 +447,10 @@ function installSkillDir(baseDir, skills, { force }) {
     const content = managedContent(s);
     staged.push({ dir, dest, data: content + stampFor(content), migrate: cls === 'legacy', name: s.name });
   }
-  // commit
-  for (const st of staged) {
-    mkdirp(st.dir);
-    if (st.migrate && fs.existsSync(st.dest)) {
-      const bak = st.dest + '.bak';
-      if (!fs.existsSync(bak)) fs.copyFileSync(st.dest, bak); // never overwrite an existing user backup
-      res.backups.push(bak);
-    }
-    const tmp = st.dest + '.tmp';
-    fs.writeFileSync(tmp, st.data, 'utf8');
-    fs.renameSync(tmp, st.dest);          // atomic replace on same volume
-    if (st.migrate) res.migrated.push(st.name); else res.installed++;
-  }
+  // commit as ONE transaction (F06a): a late failure restores every file already replaced.
+  for (const st of staged) if (st.migrate && fs.existsSync(st.dest)) res.backups.push(st.dest + '.bak');
+  commitFlatInstall(staged);
+  for (const st of staged) { if (st.migrate) res.migrated.push(st.name); else res.installed++; }
   return res;
 }
 
@@ -444,13 +519,23 @@ const LEGACY_CODEX_CLOSING = 'follow its Do / Never / examples';
 // because user instructions legitimately reference skills/ paths too. If a heading is found
 // but no closing blockquote note follows it (shape we don't recognise), we DO NOT delete to
 // EOF — we leave that heading in place and report it, rather than destroying user text.
+// AUD-20261102-F06(c): text OUTSIDE our managed markers is user text and is preserved
+// byte-for-byte (CRLF, runs of blank lines, trailing spaces). We never normalise the whole
+// file. Only the marker-delimited span (plus the single newline that terminates it) is ours.
+const MANAGED_SPAN_RE = () => new RegExp(`${escapeRe(BLOCK_START)}[\\s\\S]*?${escapeRe(BLOCK_END)}(?:\\r?\\n)?`, 'g');
 function mergeCodexBlock(existing, block) {
   let out = existing;
   let ambiguous = false;
 
-  // 1. Remove every one of OUR managed blocks (handles duplicates) — these are marker-delimited.
-  const managedRe = new RegExp(`\\n*${escapeRe(BLOCK_START)}[\\s\\S]*?${escapeRe(BLOCK_END)}\\n*`, 'g');
-  out = out.replace(managedRe, '\n');
+  // 1. Replace the FIRST managed block in place; drop any duplicate managed spans exactly.
+  //    No surrounding whitespace is consumed or rewritten.
+  let placeholder = null;
+  let seen = 0;
+  out = out.replace(MANAGED_SPAN_RE(), () => {
+    seen++;
+    if (seen === 1) { placeholder = '\u0000FCS_BLOCK\u0000'; return placeholder; }
+    return '';
+  });
 
   // 2. Remove every LEGACY (marker-less) generated section by its structural boundary.
   const lines = out.split('\n');
@@ -492,10 +577,20 @@ function mergeCodexBlock(existing, block) {
     i = closeIdx; // drop [heading-or-marker .. closeIdx]; outer ++ resumes after it (user text)
   }
 
-  out = kept.join('\n').replace(/\s*$/, '');
-  out = (out ? out + '\n\n' : '') + `${block}\n`;
-  out = out.replace(/\n{3,}/g, '\n\n');
+  out = kept.join('\n');   // split/join on '\n' is lossless for every kept line (CR stays)
+  if (placeholder !== null && out.includes(placeholder)) {
+    out = out.replace(placeholder, `${block}\n`);
+  } else {
+    // Append only: existing bytes are untouched; add just enough separator to start a new paragraph.
+    const sep = out === '' ? '' : out.endsWith('\n\n') || out.endsWith('\r\n\r\n') ? '' : out.endsWith('\n') ? '\n' : '\n\n';
+    out = out + sep + `${block}\n`;
+  }
   return ambiguous ? { text: out, ambiguous: true } : out;
+}
+
+// Remove ONLY our managed span; every other byte stays as the user left it (F06c).
+function removeCodexBlock(txt) {
+  return txt.replace(MANAGED_SPAN_RE(), '');
 }
 
 function installCodex(targetDir, skills, { force }) {
@@ -611,33 +706,16 @@ function installCodex(targetDir, skills, { force }) {
 
     // commit: swap tree, then rename AGENTS.md into place. Keep the tree backup until BOTH
     // the tree swap AND the AGENTS.md rename succeed (F03), so any failure rolls back cleanly.
-    if (fs.existsSync(treeDst)) {
-      backup = scratchName(treeDst, 'old');
-      fs.rmSync(backup, { recursive: true, force: true });
-      fs.renameSync(treeDst, backup);
-    }
+    // F06b: the helper owns the backup's whole lifetime. It deletes the backup only after a
+    // successful commit or a PROVEN restore; on any failed rollback step it keeps it and names it.
+    const backupName = scratchName(treeDst, 'old');
     try {
-      fs.renameSync(stage, treeDst);
-      fs.renameSync(agentsTmp, dest); // atomic replace on the same volume; no partial active file
+      commitTreeSwap({ treeDst, stage, agentsTmp, dest, backupName });
       agentsTmp = null;               // consumed
     } catch (e) {
-      try { if (agentsTmp) { fs.rmSync(agentsTmp, { force: true }); agentsTmp = null; } } catch { /* best effort */ }
-      fs.rmSync(treeDst, { recursive: true, force: true });
-      if (backup && fs.existsSync(backup)) {
-        try {
-          fs.renameSync(backup, treeDst); // rollback tree
-          backup = null;
-        } catch (rollbackErr) {
-          // G4-E: rollback itself failed. DO NOT delete the backup — it is the only recovery
-          // data left. Leave it on disk and surface a clear error naming where it is.
-          rollbackFailed = true;
-          const err = new Error(`${e.message}; rollback also failed (${rollbackErr.message}); recovery copy kept at ${backup}`);
-          throw err;
-        }
-      }
+      if (e.recovery && e.recovery.length) rollbackFailed = true;
       throw e;
     }
-    if (backup) { fs.rmSync(backup, { recursive: true, force: true }); backup = null; }
     return { where: skillsDst, skipped, ambiguous: agentsAmbiguous };
   } finally {
     fs.rmSync(stage, { recursive: true, force: true });
@@ -836,7 +914,7 @@ function cmdUninstall(flags, tool, scope, target, home) {
       const txt = fs.readFileSync(agentsPath, 'utf8');
       const s = txt.indexOf(BLOCK_START), e = txt.indexOf(BLOCK_END);
       if (s >= 0 && e > s) {
-        const cleaned = (txt.slice(0, s) + txt.slice(e + BLOCK_END.length)).replace(/\n{3,}/g, '\n\n').replace(/^\s+/, '');
+        const cleaned = removeCodexBlock(txt);   // F06c: only our span; user bytes unchanged
         if (!dryRun) fs.writeFileSync(agentsPath, cleaned, 'utf8');
         removed.push('AGENTS.md: managed block (user text preserved)');
       }
@@ -995,7 +1073,7 @@ if (require.main === module) {
 }
 
 module.exports = {
-  resolveBase, classify, isLegacyOutput, isLegacyCodexFile, managedContent, mergeCodexBlock, rewriteRelativeLinks,
+  resolveBase, classify, isLegacyOutput, isLegacyCodexFile, managedContent, mergeCodexBlock, removeCodexBlock, commitFlatInstall, commitTreeSwap, rewriteRelativeLinks,
   listSkillFiles, installCodex, installSkillDir, LEGACY_FILE_HASHES,
   parseFrontmatter, frontmatter, parseSkill, MAX_DESCRIPTION,
   BLOCK_START, BLOCK_END, LEGACY_CODEX_MARKER, LEGACY_CODEX_HEADING, CODEX_ROOT, CODEX_MANIFEST,
