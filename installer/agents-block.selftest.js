@@ -37,4 +37,13 @@ const removed = removeCodexBlock(twice);
 ok(!removed.includes(S) && !removed.includes(E), 'uninstall: managed span gone');
 ok(removed.startsWith(prefix) && removed.endsWith(suffix), 'uninstall: user prefix and suffix intact');
 
+// 5. Review O-6: a file WITHOUT a trailing newline round-trips byte-for-byte, also after re-installs.
+for (const orig of ['line1   \r\nline2\r\n\r\n\r\n\r\nskills/core/x.md\r\nlastline no newline   ', 'one line', 'ends with one\n', 'ends with two\n\n', '']) {
+  const i1 = text(mergeCodexBlock(orig, block(1)));
+  const i2 = text(mergeCodexBlock(i1, block(2)));
+  ok(i2.startsWith(orig), `re-install keeps user prefix: ${JSON.stringify(orig.slice(-12))}`);
+  ok(removeCodexBlock(i1) === orig, `install->uninstall exact: ${JSON.stringify(orig.slice(-12))}`);
+  ok(removeCodexBlock(i2) === orig, `install->reinstall->uninstall exact: ${JSON.stringify(orig.slice(-12))}`);
+}
+
 console.log(`agents-block self-test: ${n} checks passed`);

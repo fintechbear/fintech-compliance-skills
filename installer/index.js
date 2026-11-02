@@ -540,9 +540,10 @@ function mergeCodexBlock(existing, block) {
   //    No surrounding whitespace is consumed or rewritten.
   let placeholder = null;
   let seen = 0;
-  out = out.replace(MANAGED_SPAN_RE(), () => {
+  let keptSepTag = 0;
+  out = out.replace(MANAGED_SPAN_RE(), (span) => {
     seen++;
-    if (seen === 1) { placeholder = '\u0000FCS_BLOCK\u0000'; return placeholder; }
+    if (seen === 1) { keptSepTag = sepTagOf(span); placeholder = '\u0000FCS_BLOCK\u0000'; return placeholder; }
     return '';
   });
 
@@ -588,18 +589,30 @@ function mergeCodexBlock(existing, block) {
 
   out = kept.join('\n');   // split/join on '\n' is lossless for every kept line (CR stays)
   if (placeholder !== null && out.includes(placeholder)) {
-    out = out.replace(placeholder, `${block}\n`);
+    // In place: keep the separator record the first install wrote, so uninstall stays exact.
+    out = out.replace(placeholder, `${withSepTag(block, keptSepTag)}\n`);
   } else {
     // Append only: existing bytes are untouched; add just enough separator to start a new paragraph.
+    // The separator is OURS, so its length is recorded INSIDE the managed block and uninstall
+    // removes exactly those newlines (review O-6: a file without a trailing newline).
     const sep = out === '' ? '' : out.endsWith('\n\n') || out.endsWith('\r\n\r\n') ? '' : out.endsWith('\n') ? '\n' : '\n\n';
-    out = out + sep + `${block}\n`;
+    out = out + sep + `${withSepTag(block, sep.length)}\n`;
   }
   return ambiguous ? { text: out, ambiguous: true } : out;
 }
 
-// Remove ONLY our managed span; every other byte stays as the user left it (F06c).
+// Separator record kept inside the managed block: `<!-- fcs-sep:N -->` right after BLOCK_START.
+const SEP_TAG_RE = /<!-- fcs-sep:(\d) -->/;
+function sepTagOf(span) { const m = SEP_TAG_RE.exec(span); return m ? Number(m[1]) : 0; }
+function withSepTag(block, n) {
+  const clean = block.replace(new RegExp(`\\r?\\n?${SEP_TAG_RE.source}`), '');
+  return n > 0 ? clean.replace(BLOCK_START, `${BLOCK_START}\n<!-- fcs-sep:${n} -->`) : clean;
+}
+
+// Remove ONLY our managed span plus the separator newlines we recorded adding; every other byte
+// stays as the user left it (F06c).
 function removeCodexBlock(txt) {
-  return txt.replace(MANAGED_SPAN_RE(), '');
+  return txt.replace(MANAGED_SPAN_RE(), (span) => `\u0000FCS_CUT${sepTagOf(span)}\u0000`).replace(/(\n*)\u0000FCS_CUT(\d)\u0000/g, (_m, nl, n) => nl.slice(0, Math.max(0, nl.length - Number(n))));
 }
 
 // Manifest keys are tree-relative with a leading `skills/`; older installs wrote prefix-less keys.
