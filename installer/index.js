@@ -778,9 +778,13 @@ function loadCatalogSafe() {
 function cmdList(flags) {
   const skills = listSkillFiles();
   const catalog = loadCatalogSafe();
+  // AUD-20261102-F13: count EXECUTABLE tests separately from document/rubric evidence; a Markdown
+  // reference never makes a control "with tests".
+  const { summarizeEvidence } = require('../controls/evidence');
   const bySkill = {}; // skill path -> controls citing it
   for (const c of catalog.controls) for (const sr of (c.skill_refs || [])) {
-    (bySkill[sr] = bySkill[sr] || []).push({ id: c.id, review_status: c.review_status, has_tests: (c.test_refs || []).length > 0 });
+    const ev = summarizeEvidence(c);
+    (bySkill[sr] = bySkill[sr] || []).push({ id: c.id, review_status: c.review_status, has_tests: ev.executable_tests > 0, has_docs: ev.document_evidence > 0 });
   }
   const rows = skills.map((s) => {
     const parsed = parseSkill(s.abs);
@@ -792,7 +796,8 @@ function cmdList(flags) {
       controls: controls.map((c) => c.id),
       verified_controls: controls.filter((c) => c.review_status === 'verified').length,
       needs_review_controls: controls.filter((c) => c.review_status === 'needs_review').length,
-      controls_with_tests: controls.filter((c) => c.has_tests).length,
+      controls_with_tests: controls.filter((c) => c.has_tests).length,              // executable only
+      controls_with_document_evidence_only: controls.filter((c) => !c.has_tests && c.has_docs).length,
     };
   });
   if (flags['--json']) { console.log(JSON.stringify({ skills: rows }, null, 2)); return 0; }
@@ -801,7 +806,7 @@ function cmdList(flags) {
     console.log(`  ${r.name}  (${r.group})`);
     console.log(`    ${r.description}`);
     console.log(`    controls: ${r.controls.join(', ') || '(none)'}`);
-    console.log(`    evidence: ${r.verified_controls} verified, ${r.needs_review_controls} needs-review, ${r.controls_with_tests} with tests\n`);
+    console.log(`    evidence: ${r.verified_controls} verified, ${r.needs_review_controls} needs-review, ${r.controls_with_tests} with executable tests, ${r.controls_with_document_evidence_only} with documents only\n`);
   }
   return 0;
 }
