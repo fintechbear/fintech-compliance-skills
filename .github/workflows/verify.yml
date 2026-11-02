@@ -201,14 +201,28 @@ jobs:
         run: |
           set -e
           work="$RUNNER_TEMP/negf04"; cp -r . "$work"; cd "$work"
-          node -e 'const f="evals/grader.js";let s=require("fs").readFileSync(f,"utf8");s=s.replace("function prescribesDangerousAction(text) {","function prescribesDangerousAction(text) { return false;");require("fs").writeFileSync(f,s)'
+          node -e 'const f="evals/grader.js";let s=require("fs").readFileSync(f,"utf8");const o="function dangerousActionFindings(text) {";if(!s.includes(o))process.exit(3);s=s.replace(o,o+" return { affirmative: [], negated: [], reported: [] };");require("fs").writeFileSync(f,s)'
           if node evals/grader.js; then echo "::error::grader self-test PASSED with the F04 prose check disabled"; exit 1; fi
           echo "ok: disabled F04 check was caught"
+      - name: Re-opening AUD-20261102-F04 round 3 (first-match-only scan) MUST fail the grader self-test
+        run: |
+          set -e
+          work="$RUNNER_TEMP/negf04r3"; cp -r . "$work"; cd "$work"
+          node -e 'const f="evals/grader.js";let s=require("fs").readFileSync(f,"utf8");const o="while ((m = re.exec(t)) !== null) {";if(!s.includes(o))process.exit(3);s=s.replace(o,"if ((m = re.exec(t)) !== null) {");require("fs").writeFileSync(f,s)'
+          if node evals/grader.js; then echo "::error::grader self-test PASSED with first-match-only scanning"; exit 1; fi
+          echo "ok: first-match-only scanning was caught"
+      - name: Re-opening AUD-20261102-F01 round 3 (omitted field = declared empty) MUST fail the selector self-test
+        run: |
+          set -e
+          work="$RUNNER_TEMP/negf01"; cp -r . "$work"; cd "$work"
+          node -e 'const f="installer/profile-selector.js";let s=require("fs").readFileSync(f,"utf8");const o="const catsDeclared = Array.isArray(profile.data_categories);";if(!s.includes(o))process.exit(3);s=s.replace(o,"const catsDeclared = true;");require("fs").writeFileSync(f,s)'
+          if node installer/profile-selector.selftest.js; then echo "::error::selector self-test PASSED with omitted data_categories treated as declared"; exit 1; fi
+          echo "ok: omitted-field regression was caught"
       - name: Re-opening AUD-20261102-F12 (schema keyword contracts) MUST fail the release tests
         run: |
           set -e
           work="$RUNNER_TEMP/negf12"; cp -r . "$work"; cd "$work"
-          node -e 'const f="controls/jsonschema.js";let s=require("fs").readFileSync(f,"utf8");s=s.replace("function checkKeywordContracts(schema, where, root, errors) {","function checkKeywordContracts(schema, where, root, errors) { return;");require("fs").writeFileSync(f,s)'
+          node -e 'const f="controls/jsonschema.js";let s=require("fs").readFileSync(f,"utf8");const o="function checkKeywordContracts(schema, where, root, errors) {";if(!s.includes(o))process.exit(3);s=s.replace(o,o+" return;");require("fs").writeFileSync(f,s)'
           if node --test evals/release.selftest.js; then echo "::error::release tests PASSED with F12 preflight disabled"; exit 1; fi
           echo "ok: disabled F12 preflight was caught"
       - name: A publish guard that always allows MUST fail its self-test (AUD-20261102-F16)
