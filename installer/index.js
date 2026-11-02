@@ -730,48 +730,44 @@ function cmdExplain(flags, positional) {
   const profile = JSON.parse(fs.readFileSync(pPath, 'utf8'));
   const catalog = loadCatalogSafe();
 
-  // Selection is EXPLICIT and auditable: a control is selected when the profile's declared
-  // data_categories / stack name a skill the control cites, or the control is a global red line.
-  const roleDeclared = profile.entity_role && profile.entity_role.declared === true;
-  const dataCats = profile.data_categories || [];
-  const stackSkills = [
-    ...((profile.stack && profile.stack.languages) || []).map((l) => `skills/languages/${l}.md`),
-    ...((profile.stack && profile.stack.databases) || []).map((d) => `skills/databases/${d}.md`),
-  ];
-  // map a data category to the skill(s)/control topics it implies (explicit, documented table)
-  const CATEGORY_SKILLS = {
-    pan: ['skills/global/pci-dss.md', 'skills/refusal/refusal-policy.md'],
-    auth_credentials: ['skills/refusal/refusal-policy.md', 'skills/core/secure-fintech-coding.md'],
-    pii_identity: ['skills/core/secure-fintech-coding.md'],
-    kyc_records: ['skills/global/aml-kyc.md'],
-    transaction_records: ['skills/core/secure-fintech-coding.md'],
-  };
-  const wantSkills = new Set([...stackSkills]);
-  const reasons = {}; // skillPath -> why
-  for (const s of stackSkills) reasons[s] = 'declared stack';
-  for (const dc of dataCats) for (const sk of (CATEGORY_SKILLS[dc] || [])) { wantSkills.add(sk); reasons[sk] = (reasons[sk] ? reasons[sk] + ', ' : '') + `data_category:${dc}`; }
+  // AUD-20261102-F01: applicability is decided by a pure, versioned selector that separates the
+  // always-on security policy from the entity's actual legal obligations, and returns
+  // applicable / not_applicable / needs_declaration per control with a concrete reason. The
+  // entity's role is used as DECLARED and never inferred from stack or jurisdiction.
+  const { selectForProfile } = require('./profile-selector');
+  const sel = selectForProfile(profile, catalog);
 
-  const selected = [];
   const ambiguities = [];
-  for (const c of catalog.controls) {
-    const refs = c.skill_refs || [];
-    const hit = refs.find((r) => wantSkills.has(r));
-    const isRedLine = c.control_type === 'refusal_red_line';
-    if (hit || isRedLine) {
-      selected.push({ id: c.id, why: hit ? `skill ${hit} (${reasons[hit]})` : 'global red line (applies regardless of profile)', review_status: c.review_status, declared_gate: !hit && !roleDeclared ? 'applies regardless' : undefined });
-    }
-  }
-  if (!roleDeclared) ambiguities.push('entity_role.declared is not true — obligations tied to a regulated ROLE (e.g. MASAK/TCMB duties) are NOT inferred; declare the role to include them.');
+  if (!sel.role_declared) ambiguities.push('entity_role.declared is not true — role-gated obligations (e.g. MASAK/TCMB/AML duties) are NOT inferred; declare the role to include them.');
+  else if (!sel.obliged_role) ambiguities.push(`declared role '${profile.entity_role.kind}' is not an obliged entity — AML/evasion duties are its customers', not this entity's.`);
   if (profile.stack && profile.stack.detected === true) ambiguities.push('stack.detected=true — the stack was auto-detected; confirm it matches the real system before relying on language/db-specific controls.');
   for (const ov of (profile.overlays || [])) ambiguities.push(`overlay '${ov}' is declared — overlay controls are applied SEPARATELY and never silently override base controls.`);
 
-  const result = { profile: profile.profile_id, role_declared: roleDeclared, jurisdictions: profile.jurisdictions || [], selected, ambiguities };
+  const result = {
+    selector_version: sel.selector_version,
+    profile: sel.profile,
+    role_declared: sel.role_declared,
+    obliged_role: sel.obliged_role,
+    jurisdictions: sel.jurisdictions,
+    security_policy: sel.security_policy,
+    applicable: sel.applicable,
+    not_applicable: sel.not_applicable,
+    needs_declaration: sel.needs_declaration,
+    ambiguities,
+  };
   if (flags['--json']) { console.log(JSON.stringify(result, null, 2)); return 0; }
-  console.log(`explain profile: ${profile.profile_id}`);
-  console.log(`  role declared: ${roleDeclared ? `yes (${profile.entity_role.kind}/${profile.entity_role.activity})` : 'NO — obligations are not inferred'}`);
-  console.log(`  jurisdictions: ${(profile.jurisdictions || []).join(', ') || '(none declared)'}`);
-  console.log(`  selected ${selected.length} controls:`);
-  for (const s of selected) console.log(`    ${s.id} [${s.review_status}] — ${s.why}`);
+  console.log(`explain profile: ${sel.profile}  (selector v${sel.selector_version})`);
+  console.log(`  role declared: ${sel.role_declared ? `yes (${profile.entity_role.kind}/${profile.entity_role.activity})` + (sel.obliged_role ? ' — obliged entity' : ' — NOT an obliged entity') : 'NO — obligations are not inferred'}`);
+  console.log(`  jurisdictions: ${sel.jurisdictions.join(', ') || '(none declared)'}`);
+  console.log(`  ALWAYS-ON security policy (not a profile-specific legal obligation): ${sel.security_policy.map((s) => s.id).join(', ') || '(none)'}`);
+  console.log(`  APPLICABLE legal/regulatory obligations (${sel.applicable.length}):`);
+  for (const s of sel.applicable) console.log(`    ${s.id} [${s.review_status}] — ${s.reason}`);
+  console.log(`  NOT APPLICABLE (${sel.not_applicable.length}):`);
+  for (const s of sel.not_applicable) console.log(`    ${s.id} — ${s.reason}`);
+  if (sel.needs_declaration.length) {
+    console.log(`  NEEDS DECLARATION (${sel.needs_declaration.length}):`);
+    for (const s of sel.needs_declaration) console.log(`    ${s.id} — ${s.reason}`);
+  }
   if (ambiguities.length) { console.log('  AMBIGUITIES / what is NOT inferred:'); for (const a of ambiguities) console.log(`    - ${a}`); }
   return 0;
 }
