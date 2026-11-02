@@ -113,10 +113,20 @@ const VALID_TYPE_NAMES = new Set(['string', 'number', 'integer', 'boolean', 'obj
 // closed at preflight instead of silently passing when today's data happens to omit that
 // property (F12). This runs once over the whole schema tree before any data is checked.
 function checkKeywordContracts(schema, where, root, errors) {
-  // $ref must resolve against the root document.
+  // $ref must resolve against the root document, and (F12 round 3) the declared subset only
+  // supports refs into #/definitions/<name> whose target is itself a schema (object or boolean).
+  // A ref to '#/title', '#/default' or '#/definitions/x/type' points at a non-schema value and
+  // would otherwise enforce nothing.
   if (owns(schema, '$ref')) {
     if (typeof schema.$ref !== 'string') errors.push(`${where}: $ref must be a string`);
-    else { try { resolveRef(schema.$ref, root); } catch (e) { errors.push(`${where}: ${e.message}`); } }
+    else if (!/^#\/definitions\/[^/]+$/.test(schema.$ref)) errors.push(`${where}: unsupported $ref '${schema.$ref}' (only '#/definitions/<name>' is supported)`);
+    else {
+      try {
+        const target = resolveRef(schema.$ref, root);
+        const isSchema = typeof target === 'boolean' || (target !== null && typeof target === 'object' && !Array.isArray(target));
+        if (!isSchema) errors.push(`${where}: $ref '${schema.$ref}' does not point at a schema (got ${typeOf(target)})`);
+      } catch (e) { errors.push(`${where}: ${e.message}`); }
+    }
   }
   // type must name real JSON types.
   if (owns(schema, 'type')) {

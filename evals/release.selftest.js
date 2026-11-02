@@ -140,6 +140,13 @@ test('F12 round 3: every supported keyword has its shape checked at preflight', 
   // boolean schemas unchanged
   a.deepEqual(validate(5, true), []);
   a.notEqual(validate(5, false).length, 0);
+  // $ref must target a schema inside #/definitions (independent review, round 3)
+  a.notEqual(validate({}, {type:'object',properties:{opt:{$ref:'#/title'},keep:{type:'string'}},title:'T'}).length, 0);
+  a.notEqual(validate({}, {type:'object',properties:{opt:{$ref:'#/default'}},default:{type:'strnig'}}).length, 0);
+  a.notEqual(validate({opt:'abc'}, {type:'object',properties:{opt:{$ref:'#/definitions/amount/type'}},definitions:{amount:{type:'integer'}}}).length, 0);
+  a.notEqual(validate({}, {type:'object',properties:{opt:{$ref:'#/definitions/s'}},definitions:{s:'string'}}).length, 0);
+  a.deepEqual(validate({opt:1}, {type:'object',properties:{opt:{$ref:'#/definitions/n'}},definitions:{n:{type:'integer'}}}), []);
+  a.deepEqual(validate({opt:1}, {type:'object',properties:{opt:{$ref:'#/definitions/any'}},definitions:{any:true}}), []);
 });
 
 test('F12: invalid keyword contracts fail closed in unvisited optional branches', () => {
