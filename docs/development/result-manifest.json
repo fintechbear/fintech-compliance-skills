@@ -1,29 +1,52 @@
 {
-  "schema": "fcs-release-scope/2",
-  "review_base_sha": "ff4b491974503d8b70db2c73e5c1200bbaa780f2",
-  "evidence_subject": "Full github.sha and per-job results emitted by current Verify release-evidence artifact",
-  "cli_tests": {
-    "status": "NOT_RUN",
-    "reason": "explicit owner exclusion 2026-10-28",
-    "includes": [
-      "installer",
-      "doctor",
-      "packed artifact CLI smoke",
-      "Claude/Codex/Kiro runtime",
-      "40x3 live-agent evaluation"
-    ]
+  "schema": "fcs-release-scope/3",
+  "audit_set": "AUD-20261102",
+  "supersedes": "fcs-release-scope/2 (review base ff4b491, 2026-10-28) — historical, not evidence for this candidate",
+  "baseline": {
+    "pr10_head": "dad60d0268a6db883d4e586c8aa632a36442783b",
+    "pr10_tree": "63115beadb8f069a6ee0c9144a059a5185b4079b",
+    "main": "654018e847e5f91801d5dc0bdf80af7ba6be2517"
   },
-  "required_gates": [
-    "module OS/Node matrix",
-    "control catalog and schema",
-    "grader/config regressions",
-    "negative gate proof",
-    "TypeScript typecheck",
-    "TypeScript real PostgreSQL",
-    "dotnet real PostgreSQL"
+  "current_source": {
+    "branch": "fix/f01-f16-closure",
+    "pr": "https://github.com/fintechbear/fintech-compliance-skills/pull/11",
+    "last_code_commit": "31c1e2f9d04363fb9bbf8442a36211c3294b79d3",
+    "last_code_tree": "dd15654d3fa6b2271f803a66bbeaebd87ee5c782",
+    "dirty": false,
+    "note": "A static file cannot hold its own commit. The authoritative subject is the release-evidence artifact of the Verify run for the PR head."
+  },
+  "findings": {
+    "F01": { "priority": "P1", "status": "CONFIRMED_FIXED", "path": "installer/index.js cmdExplain; installer/profile-selector.js", "commits": ["2746c31"], "evidence": "installer/profile-selector.selftest.js", "limit": "coarse selector-owned applicability table" },
+    "F02": { "priority": "P1", "status": "CONFIRMED_FIXED", "path": "skills/languages/csharp-dotnet.md transfer example", "commits": ["f9875df"], "evidence": "installer/skill-inventory.selftest.js ordering (static); .NET real-PG harness", "limit": "illustrative Markdown" },
+    "F03": { "priority": "P1", "status": "CONFIRMED_FIXED", "path": "examples/ts-postgres-harness/money.ts", "commits": ["301f1bf"], "evidence": "money.selftest.ts (fails on baseline)", "limit": null },
+    "F04": { "priority": "P1", "status": "CONFIRMED_FIXED", "path": "evals/grader.js refusal branch", "commits": ["8982eeb"], "evidence": "evals/grader.js self-test; negative gate", "limit": "deterministic rules; novel phrasing may need review" },
+    "F05": { "priority": "P1", "status": "CONFIRMED_FIXED", "path": "installer/codex-ownership.js; installer/index.js computeInstallDiff/cmdUninstall/installCodex", "commits": ["13c18d7"], "evidence": "installer/codex-ownership.selftest.js", "limit": "doctor keeps its own manifest-v2 integrity check" },
+    "F06": { "priority": "P1", "status": "CONFIRMED_FIXED", "path": "installer/index.js commitFlatInstall/commitTreeSwap/mergeCodexBlock/removeCodexBlock", "commits": ["0495098", "31c1e2f"], "evidence": "installer/install-txn.selftest.js; installer/agents-block.selftest.js", "limit": "real-filesystem install NOT_RUN" },
+    "F07": { "priority": "P1", "status": "CONFIRMED_FIXED", "path": "installer/source.js; installer/stamp-source.js; installer/index.js rewriteResourceRefs/codexFileContent", "commits": ["9e38603"], "evidence": "installer/resource-refs.selftest.js", "limit": "unpinned builds show a note, not a link" },
+    "F08": { "priority": "P2", "status": "CONFIRMED_FIXED", "path": "skills/{databases/mongodb,databases/mysql-mariadb,languages/javascript-typescript,languages/python}.md; skills/INDEX.md", "commits": ["4bf13f8"], "evidence": "installer/skill-inventory.selftest.js", "limit": null },
+    "F09": { "priority": "P1", "status": "CONFIRMED_FIXED", "path": "skills/** (17 country summaries, transfer/aml-kyc/go/rust)", "commits": ["cde759d"], "evidence": "installer/content-consistency.selftest.js", "limit": "no legal-completeness claim" },
+    "F10": { "priority": "P2", "status": "CONFIRMED_FIXED", "path": "examples/ts-postgres-harness/refund.ts cancel", "commits": ["225c46e"], "evidence": "real PG: baseline-probes/f10-cancel-race.ts reproduced; 2 race tests pass; refund 19/19; CI run 41487905583", "limit": null },
+    "F11": { "priority": "P2", "status": "CONFIRMED_FIXED", "path": "evals/tasks.jsonl T004; evals/release.selftest.js; evals/grader.js", "commits": ["8982eeb", "1ba0aea"], "evidence": "release.selftest.js; grader self-test", "limit": null },
+    "F12": { "priority": "P2", "status": "CONFIRMED_FIXED", "path": "controls/jsonschema.js checkKeywordContracts", "commits": ["ab46002", "1ba0aea"], "evidence": "release.selftest.js; negative gate", "limit": "declared draft-07 subset only" },
+    "F13": { "priority": "P2", "status": "CONFIRMED_FIXED", "path": "controls/evidence.js; controls/validate-controls.js; controls/catalog.json; installer/index.js cmdList", "commits": ["e0904a1"], "evidence": "controls/evidence.selftest.js", "limit": "FCS-RETAIN-001, FCS-EVASION-001 needs_review" },
+    "F14": { "priority": "P2", "status": "CONFIRMED_FIXED", "path": "examples/ts-postgres-harness/package.json + lockfile", "commits": ["8176e89"], "evidence": "npm audit 0; tsc --noEmit 0", "limit": "dev-server advisory only" },
+    "F15": { "priority": "P2", "status": "CONFIRMED_FIXED", "path": "README.md; package.json; docs/development/RELEASE_CLOSURE.md", "commits": ["197de91", "d071d9c"], "evidence": "test:release:noncli; packed inventory", "limit": null },
+    "F16": { "priority": "P1", "status": "CONFIRMED_FIXED", "path": ".github/workflows/publish.yml; .github/scripts/release-guard.js; .github/workflows/verify.yml readiness; SECURITY.md; .github/dependabot.yml", "commits": ["521e95d", "14b3674"], "evidence": "release-guard.selftest.js; negative gate; release-readiness", "limit": "remote protection not applied (draft only)" }
+  },
+  "commands": [
+    { "cmd": "npm run test:release:noncli", "where": "local", "exit": 0 },
+    { "cmd": "npx tsc --noEmit", "where": "local examples/ts-postgres-harness", "exit": 0 },
+    { "cmd": "npm audit", "where": "local examples/ts-postgres-harness", "exit": 0 },
+    { "cmd": "npm pack --dry-run --json", "where": "local", "exit": 0, "entries": 52 },
+    { "cmd": "Verify workflow", "where": "CI", "run": 41491882558, "subject": "d071d9c", "conclusion": "success", "includes": ["release-readiness", "ts-postgres-harness real PG", "dotnet-postgres-harness real PG", "negative-gate-proof incl. F04/F12/F16"] }
   ],
-  "runtime_agent_isolation": "UNVERIFIED; only profile configuration tested",
-  "agent_effectiveness": "NOT_CLAIMED",
-  "provider_integration": "labelled doubles; no live provider sandbox",
-  "publication": "not performed by this remediation"
+  "local_db": "BLOCKED (Docker daemon not running locally); DB evidence is CI PostgreSQL 16",
+  "cli": "NOT_RUN",
+  "live_agent": "NOT_RUN",
+  "provider_sandbox": "NOT_RUN",
+  "independent_review": { "verdict": "1 OPEN (P2) on d071d9c, fixed in 31c1e2f; reviewer probe now byte-identical" },
+  "github_preparation": "READY_FOR_REVIEW: branch fix/f01-f16-closure, PR #11 (draft). Not merged, not tagged, no release.",
+  "remote_settings": { "main_protected": false, "rulesets": [], "private_vulnerability_reporting": false, "observed": "2026-11-02", "changed_by_this_work": false },
+  "npm_authorization": "UNVERIFIED (public npm view: E404; no account access exercised)",
+  "publication": "NOT_PERFORMED"
 }
