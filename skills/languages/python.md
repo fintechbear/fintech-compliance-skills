@@ -1,3 +1,9 @@
+---
+name: "python"
+description: "Write Python that is safe in a regulated financial system: Decimal money handling, secrets, input validation, logging hygiene, authorization and audit. Load when the task is Python and touches money, PII, card data, onboarding/KYC or audited records."
+triggers: "python, django, flask, fastapi, sqlalchemy, pandas, pip"
+---
+
 # Skill: Python for Regulated Fintech
 
 **Purpose.** Make an AI coding agent write Python that is safe to run in a regulated

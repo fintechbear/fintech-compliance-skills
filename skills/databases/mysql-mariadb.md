@@ -1,3 +1,9 @@
+---
+name: "mysql-mariadb"
+description: "Configure and query MySQL or MariaDB safely for regulated fintech: encryption at rest and in transit, least-privilege grants, audit configuration, and PII masking in SQL that touches money or identity data. Load when the task involves MySQL/MariaDB schema, DDL, grants or queries."
+triggers: "mysql, mariadb, innodb, sql, ddl, grant, audit plugin, tde"
+---
+
 # Skill: MySQL / MariaDB for Regulated Fintech
 
 **Purpose.** Make an AI coding agent configure and query MySQL or MariaDB so the

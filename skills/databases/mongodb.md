@@ -1,3 +1,9 @@
+---
+name: "mongodb"
+description: "Configure and query MongoDB safely for regulated fintech: field-level and at-rest encryption, least-privilege roles, auditing, PII masking and retention at the storage layer. Load when the datastore is MongoDB (self-managed or Atlas) and holds PII, card data, ledgers or KYC records."
+triggers: "mongodb, mongo, atlas, mongoose, collection, document database, csfle, queryable encryption"
+---
+
 # Skill: MongoDB for Regulated Fintech
 
 **Purpose.** Make an AI coding agent configure and use MongoDB safely in a regulated

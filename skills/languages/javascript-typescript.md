@@ -1,3 +1,9 @@
+---
+name: "javascript-typescript"
+description: "Write Node.js / TypeScript (browser and back-end) that is safe in a regulated financial system: exact money handling, secrets, input validation, logging hygiene, authorization and audit. Load when the task is JavaScript or TypeScript and touches money, PII, card data, onboarding/KYC or audited records."
+triggers: "javascript, typescript, node, nodejs, express, nestjs, next.js, react, npm"
+---
+
 # Skill: JavaScript / TypeScript (Node.js) for Regulated Fintech
 
 **Purpose.** Make an AI coding agent write Node.js/TypeScript (web front end + Node

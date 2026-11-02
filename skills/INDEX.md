@@ -7,6 +7,15 @@ Load the skills relevant to your task. **Always load `refusal/refusal-policy.md`
 - [`core/secure-fintech-coding.md`](core/secure-fintech-coding.md) — baseline rules for all financial code
 - [`refusal/refusal-policy.md`](refusal/refusal-policy.md) — the hard limits / when to say no
 
+## Core task skills (load the one matching the task)
+
+- [`core/fintech-transfer.md`](core/fintech-transfer.md) — move money between accounts (authorize, idempotency, atomic debit+credit+audit)
+- [`core/fintech-provider-webhook.md`](core/fintech-provider-webhook.md) — call a payment provider and consume its webhooks
+- [`core/fintech-ledger-reconciliation.md`](core/fintech-ledger-reconciliation.md) — double-entry ledger and provider reconciliation
+- [`core/fintech-refund-cancel.md`](core/fintech-refund-cancel.md) — cancel, void or refund a payment by lifecycle state
+- [`core/fintech-retention-erasure.md`](core/fintech-retention-erasure.md) — retention, legal hold and erasure per data category
+- [`core/fintech-pr-review.md`](core/fintech-pr-review.md) — review a financial code change against the controls
+
 ## Global frameworks
 
 - [`global/pci-dss.md`](global/pci-dss.md) — payment card data
