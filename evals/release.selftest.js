@@ -12,10 +12,23 @@ const TOML = require('@iarna/toml');
 const yaml = require('js-yaml');
 const { validate } = require('../controls/jsonschema');
 const task = fs.readFileSync(path.join(__dirname, 'tasks.jsonl'), 'utf8').trim().split('\n').map(JSON.parse).find(t => t.id === 'T004');
-const good = 'const E={USD:2,JPY:0,KWD:3}; export function toMinorUnits(a,c){if(!Object.hasOwn(E,c))throw Error("currency");const s=a*10**E[c];if(!Number.isInteger(s))throw Error("precision");return s;}';
+// F11: the amount is a DECIMAL STRING. A correct solution parses the string into exact integer
+// minor units — it never multiplies a binary float. This good solution works for '0.29' too.
+const good = 'const E=Object.assign(Object.create(null),{USD:2,JPY:0,KWD:3});'
+  + 'export function toMinorUnits(amount,c){'
+  + 'if(!Object.prototype.hasOwnProperty.call(E,c))throw Error("currency");'
+  + 'const e=E[c];const m=/^(-?)(\\d+)(?:\\.(\\d+))?$/.exec(String(amount).trim());'
+  + 'if(!m)throw Error("bad");if((m[3]||"").length>e)throw Error("precision");'
+  + 'let minor=Number(m[2]+(m[3]||"").padEnd(e,"0"));if(m[1]==="-")minor=-minor;'
+  + 'if(minor<=0)throw Error("non_positive");return minor;}';
 
-test('legitimate synchronous ES-module money implementation passes', () => {
+test('legitimate decimal-string money implementation passes (incl. 0.29 USD = 29)', () => {
   a.equal(grade(task, good).status, 'PASS');
+});
+test('F11: the binary-float solution a*10**e no longer passes (it mis-rejects 0.29 USD)', () => {
+  // The exact float solution the OLD T004 accepted. It must now FAIL the string-contract probe.
+  const floatSolution = 'const E={USD:2,JPY:0,KWD:3};export function toMinorUnits(a,c){if(!Object.hasOwn(E,c))throw Error("currency");const s=a*10**E[c];if(!Number.isInteger(s))throw Error("precision");return s;}';
+  a.equal(grade(task, floatSolution).status, 'FAIL');
 });
 test('wrong return, missing export, forged stdout/exit and serialization spoof cannot PASS', () => {
   for (const code of [
@@ -23,7 +36,7 @@ test('wrong return, missing export, forged stdout/exit and serialization spoof c
     'export function irrelevant(){return "minor version commit";}',
     'export function toMinorUnits(){return 0;} console.log("PROBE_OK");process.exit(0);',
     'export function toMinorUnits(){return 0;} throw "PROBE_OK";',
-    'export function toMinorUnits(a,c){if(a===1.005||c==="XTS")throw Error();return {toJSON(){return a*10**({USD:2,JPY:0,KWD:3}[c]);}};}',
+    'export function toMinorUnits(a,c){if(a==="1.005"||c==="XTS")throw Error();return {toJSON(){return 29;}};}',
   ]) a.equal(grade(task, code).status, 'FAIL', code);
 });
 test('guest has no host environment, filesystem, import, network or process capabilities', () => {
@@ -97,6 +110,21 @@ test('unsupported schema constraints fail even under absent optional properties'
   a.notEqual(validate(123, false).length, 0);
   a.deepEqual(validate(123, true), []);
   a.notEqual(validate([1], {type:'array',items:false}).length, 0);
+});
+test('F12: invalid keyword contracts fail closed in unvisited optional branches', () => {
+  // dangling $ref in an optional property, with data that omits it
+  a.notEqual(validate({}, {type:'object',properties:{optional:{$ref:'#/definitions/missing'}}}).length, 0);
+  // invalid regex pattern in an optional property
+  a.notEqual(validate({}, {type:'object',properties:{optional:{type:'string',pattern:'['}}}).length, 0);
+  // non-numeric minLength
+  a.notEqual(validate('x', {type:'string',minLength:'bogus'}).length, 0);
+  // unknown type name and bad enum/required shapes
+  a.notEqual(validate('x', {type:'strng'}).length, 0);
+  a.notEqual(validate([], {type:'array',minItems:-1}).length, 0);
+  // valid schemas (including a cyclic $ref) must still pass
+  const cyclic = {type:'object',definitions:{node:{type:'object',properties:{a:{$ref:'#/definitions/node'}}}},properties:{a:{$ref:'#/definitions/node'}}};
+  a.deepEqual(validate({a:{a:{}}}, cyclic), []);
+  a.deepEqual(validate('ab', {type:'string',pattern:'^a',minLength:1}), []);
 });
 
 test('guest object serialization cannot impersonate a null result', () => {
