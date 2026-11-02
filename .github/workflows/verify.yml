@@ -35,10 +35,10 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: npm ci
-      - name: Grader behavioural regressions (WASM; no agent CLI)
-        run: node evals/grader.js
-      - name: Release module regressions (no CLI invocation)
-        run: node --test evals/release.selftest.js
+      # One named non-CLI gate (AUD-20261102-F15). It never runs installer/verify.js,
+      # installer/test.js, installer/test-diagnose.js or evals/run.js.
+      - name: Non-CLI release module tests (npm run test:release:noncli)
+        run: npm run test:release:noncli
       - name: Package inventory only (NOT an installed CLI smoke test)
         run: npm pack --dry-run
 
@@ -111,6 +111,12 @@ jobs:
       - name: Real typecheck (tsc --noEmit — not tsx)
         working-directory: examples/ts-postgres-harness
         run: npx tsc --noEmit
+      - name: Pure money parser test (no DB)
+        working-directory: examples/ts-postgres-harness
+        run: npm run test:money
+      - name: Harness dependency audit (must be clean)
+        working-directory: examples/ts-postgres-harness
+        run: npm audit --audit-level=low
       - name: FAILING-FIRST — reviewed base (654018e) must FAIL the new acceptance tests
         working-directory: examples/ts-postgres-harness
         run: bash baseline-regression.sh 654018e847e5f91801d5dc0bdf80af7ba6be2517
