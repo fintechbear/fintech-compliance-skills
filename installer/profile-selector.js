@@ -45,7 +45,10 @@ const APPLICABILITY = {
   'FCS-MONEY-001':    { anyDataCategory: ['transaction_records'] },
   'FCS-WEBHOOK-001':  { anyProvider: true },
   'FCS-OUTCOME-001':  { anyProvider: true },
-  'FCS-IDEMP-001':    { anyProvider: true },
+  // F01 round 3: idempotency is an engineering control for ANY retryable money-moving operation
+  // (internal transfers included), not only for external provider calls. Provider absence alone
+  // never excludes it; see decideControl's moneyMovement branch.
+  'FCS-IDEMP-001':    { moneyMovement: true },
   'FCS-AUTHZ-001':    { anyDataCategory: ['transaction_records', 'pii_identity'] },
   'FCS-PRREVIEW-001': { alwaysSecurityPolicy: true },
   'FCS-OUTBOX-001':      { anyProvider: true },
@@ -65,11 +68,20 @@ function isObligedRole(profile) {
   return !!(er && er.declared === true && OBLIGED_ROLES.has(er.kind));
 }
 
+// Declared operations that move money. Declared via the optional profile field `operations`.
+const MONEY_MOVING_OPERATIONS = new Set(['internal_transfer', 'provider_payment', 'refund', 'payout']);
+
 // Decide legal applicability for one control given the declared profile.
+// F01 round 3: an OMITTED optional field (data_categories, payment_providers, operations) is
+// "not declared", never "declared empty". Only an explicit [] can make a gated control
+// not_applicable; an absent field yields needs_declaration.
 function decideControl(control, profile) {
   const req = APPLICABILITY[control.id] || {};
-  const declaredCats = new Set(profile.data_categories || []);
-  const declaredProviders = (profile.payment_providers || []);
+  const catsDeclared = Array.isArray(profile.data_categories);
+  const providersDeclared = Array.isArray(profile.payment_providers);
+  const opsDeclared = Array.isArray(profile.operations);
+  const declaredCats = new Set(catsDeclared ? profile.data_categories : []);
+  const declaredProviders = providersDeclared ? profile.payment_providers : [];
   const roleDeclared = !!(profile.entity_role && profile.entity_role.declared === true);
 
   const reasons = [];
@@ -81,14 +93,29 @@ function decideControl(control, profile) {
   }
   // Data-category-gated obligations.
   if (req.anyDataCategory) {
+    if (!catsDeclared) return { status: 'needs_declaration', reason: `data_categories not declared; cannot rule out {${req.anyDataCategory.join(', ')}}` };
     const hits = req.anyDataCategory.filter((c) => declaredCats.has(c));
     if (!hits.length) return { status: 'not_applicable', reason: `no declared data category in {${req.anyDataCategory.join(', ')}}` };
     reasons.push(`data category ${hits.join('/')}`);
   }
   // Provider-gated obligations.
   if (req.anyProvider) {
-    if (!declaredProviders.length) return { status: 'not_applicable', reason: 'no payment provider declared' };
+    if (!providersDeclared) return { status: 'needs_declaration', reason: 'payment_providers not declared; cannot rule out a provider integration' };
+    if (!declaredProviders.length) return { status: 'not_applicable', reason: 'payment_providers declared empty' };
     reasons.push(`payment provider ${declaredProviders.join('/')}`);
+  }
+  // Money-movement-gated engineering controls (idempotency): any retryable money-moving
+  // operation, internal or via a provider. Free-text `activity` is never parsed.
+  if (req.moneyMovement) {
+    const ops = opsDeclared ? profile.operations.filter((o) => MONEY_MOVING_OPERATIONS.has(o)) : [];
+    if (declaredProviders.length) reasons.push(`payment provider ${declaredProviders.join('/')}`);
+    if (ops.length) reasons.push(`declared money-moving operation ${ops.join('/')}`);
+    if (!reasons.length) {
+      if (opsDeclared && providersDeclared) {
+        return { status: 'not_applicable', reason: 'declared operations include no money movement and payment_providers declared empty' };
+      }
+      return { status: 'needs_declaration', reason: 'money-moving operations not declared; provider absence alone does not exclude idempotency for internal transfers' };
+    }
   }
   // No gating requirement listed → it is a baseline obligation that applies once the profile
   // exists (e.g. logging hygiene), unless the control id is unknown to this selector.
@@ -126,4 +153,4 @@ function selectForProfile(profile, catalog) {
   };
 }
 
-module.exports = { selectForProfile, decideControl, isObligedRole, SELECTOR_VERSION, APPLICABILITY, OBLIGED_ROLES };
+module.exports = { selectForProfile, decideControl, isObligedRole, SELECTOR_VERSION, APPLICABILITY, OBLIGED_ROLES, MONEY_MOVING_OPERATIONS };

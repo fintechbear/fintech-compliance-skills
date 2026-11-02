@@ -76,4 +76,43 @@ s = selectForProfile(noProvider, catalog);
 ok(status(s, 'FCS-WEBHOOK-001') === 'not_applicable', 'TR PSP w/o provider: webhook not applicable');
 ok(status(s, 'FCS-PAN-001') === 'applicable', 'TR PSP w/o provider: PAN still applicable (card data unchanged)');
 
+// 7. F01 round 3: internal retryable transfers need idempotency even with NO provider.
+const { decideControl } = require('./profile-selector');
+const ctl = (id) => catalog.controls.find((c) => c.id === id);
+const internalApi = {
+  profile_id: 'internal-transfer-api',
+  entity_role: { kind: 'obliged_entity', declared: true, activity: 'PSP; internal transfers over retryable HTTP API' },
+  jurisdictions: ['TR'], data_categories: ['transaction_records', 'auth_credentials'], payment_providers: [],
+  stack: { languages: ['csharp-dotnet'], databases: ['postgresql'], detected: false },
+};
+let d = decideControl(ctl('FCS-IDEMP-001'), internalApi);
+ok(d.status === 'needs_declaration', `internal API, operations undeclared: IDEMP needs_declaration (got ${d.status})`);
+d = decideControl(ctl('FCS-IDEMP-001'), { ...internalApi, operations: ['internal_transfer'] });
+ok(d.status === 'applicable', 'internal API + declared internal_transfer: IDEMP applicable without a provider');
+d = decideControl(ctl('FCS-IDEMP-001'), { ...internalApi, operations: ['reporting_only'] });
+ok(d.status === 'not_applicable', 'declared reporting_only + providers []: IDEMP not_applicable');
+d = decideControl(ctl('FCS-IDEMP-001'), { ...internalApi, operations: ['reporting_only'], payment_providers: undefined });
+ok(d.status === 'needs_declaration', 'reporting_only but providers undeclared: IDEMP needs_declaration');
+ok(decideControl(ctl('FCS-IDEMP-001'), trPsp).status === 'applicable', 'TR PSP with provider: IDEMP applicable');
+// free-text activity is never parsed into a decision
+d = decideControl(ctl('FCS-IDEMP-001'), { ...internalApi, entity_role: { ...internalApi.entity_role, activity: 'reporting only, no money' } });
+ok(d.status === 'needs_declaration', 'activity text does not change the IDEMP decision');
+
+// 8. F01 round 3: an OMITTED optional field is not a declared-empty field.
+const undeclared = { profile_id: 'undeclared-data', entity_role: { kind: 'vendor_to_obliged_entity', declared: true }, jurisdictions: ['EU'] };
+ok(decideControl(ctl('FCS-PAN-001'), undeclared).status === 'needs_declaration', 'data_categories omitted: PAN needs_declaration');
+ok(decideControl(ctl('FCS-PAN-001'), { ...undeclared, data_categories: [] }).status === 'not_applicable', 'data_categories []: PAN not_applicable');
+ok(decideControl(ctl('FCS-WEBHOOK-001'), undeclared).status === 'needs_declaration', 'payment_providers omitted: webhook needs_declaration');
+ok(decideControl(ctl('FCS-WEBHOOK-001'), { ...undeclared, payment_providers: [] }).status === 'not_applicable', 'payment_providers []: webhook not_applicable');
+ok(decideControl(ctl('FCS-AML-001'), undeclared).status === 'not_applicable', 'declared vendor role: AML not_applicable regardless of data');
+// same profile, different jurisdiction: a global engineering control does not flip
+ok(decideControl(ctl('FCS-IDEMP-001'), { ...internalApi, jurisdictions: ['EU'] }).status === decideControl(ctl('FCS-IDEMP-001'), internalApi).status,
+  'jurisdiction change alone does not invent a different IDEMP result');
+// the new optional field is schema-valid; an unknown operation is rejected
+const { validate } = require('../controls/jsonschema');
+const pschema = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'controls', 'schema', 'profile.schema.json'), 'utf8'));
+ok(validate(undeclared, pschema).length === 0, 'undeclared-data profile is schema-valid');
+ok(validate({ ...internalApi, operations: ['internal_transfer'] }, pschema).length === 0, 'operations field is schema-valid');
+ok(validate({ ...internalApi, operations: ['teleport'] }, pschema).length > 0, 'unknown operation is rejected by the schema');
+
 console.log(`profile-selector self-test: ${n} checks passed`);
