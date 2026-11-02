@@ -38,7 +38,7 @@ The agent must read these itself when the task touches them — nothing auto-loa
 | FCS-AUTHZ-001 | The actor is authorized to move funds from the SOURCE account; tenant isolation holds. |
 | FCS-MONEY-001 | Amount is minor-units per ISO 4217 (0/2/3 decimals); reject zero/negative/over-precision/overflow/unsupported currency; never mix currencies in one posting. |
 | FCS-IDEMP-001 | Fingerprint = (tenant, operation, key, canonical payload). Same key+payload replays one effect; same key+different payload is a conflict; same key across tenants is independent. |
-| FCS-AML-001 | KYC/AML/sanctions screening where required; a hit is warn+audit+hold, never a silent pass. |
+| FCS-AML-001 | KYC/AML/sanctions screening where required; never a silent pass. A candidate match goes to review, a false positive is cleared with a recorded decision, a PEP gets risk-based due diligence, and only a confirmed sanctions match (or an explicitly declared institution policy) holds or blocks. |
 | FCS-AUDIT-001 | Debit, credit, ledger/audit entry AND the idempotency record commit or roll back together, in one transaction. |
 
 ## Step order
@@ -52,8 +52,11 @@ The agent must read these itself when the task touches them — nothing auto-loa
    payload, return the stored result and do nothing. If seen with a DIFFERENT payload,
    reject as a conflict (FCS-IDEMP-001). The real guarantee is a DB unique constraint, not an
    in-memory check — the key row is inserted in the SAME transaction as the effect.
-4. **Screen** — where required, run sanctions/AML; a hit holds the transfer and is audited
-   (FCS-AML-001). Record the decision + case id.
+4. **Screen** — where required, run sanctions/AML and record the decision + case id
+   (FCS-AML-001). A candidate match routes the transfer to review (it is not yet a block); a
+   cleared false positive proceeds with its recorded decision; a PEP gets risk-based due
+   diligence, not an automatic block; a confirmed sanctions match — or the institution's own
+   declared hold policy — holds/blocks it. Never silently pass or silently drop.
 5. **Apply atomically** — in one transaction: debit source, credit destination, write the
    ledger/audit record, insert the idempotency row. All commit or all roll back
    (FCS-AUDIT-001). On a serialization failure, retry a bounded number of times; on an

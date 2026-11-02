@@ -367,7 +367,7 @@ matching regional skill for specifics.
   anything affecting financial reporting (lock down `GRANT`, audit DDL). GLBA: safeguard
   customer financial info — encryption at rest/in transit + access control. CCPA/CPRA:
   access/deletion rights — know which columns hold PII.
-- **Turkey — KVKK, BDDK, MASAK.** KVKK: consent + data-subject rights, VERBİS
+- **Turkey — KVKK, BDDK, MASAK.** Scope first: these regimes follow the entity’s licensed role and activity, not the customer’s country — BDDK covers banks, TCMB covers payment and e-money institutions, MASAK duties fall on obliged parties. A Turkish user alone only triggers the KVKK analysis (a lawful basis, and a KVKK transfer mechanism for any cross-border transfer). The sector localization below applies only to an in-scope institution; see `regional/turkey-kvkk-bddk-masak.md`. KVKK: consent + data-subject rights, VERBİS
   registration where applicable. **BDDK may require data localization** — the DB and its
   backups/replicas must sit on infrastructure **in Turkey**; do not default to an
   offshore cloud region, and check replication/backup targets. **MASAK**: AML/

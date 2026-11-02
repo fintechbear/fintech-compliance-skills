@@ -352,9 +352,9 @@ regional skill for specifics.
   affecting financial reporting (immutable audit logs, segregation of duties). GLBA:
   safeguard customer financial info (encryption at rest/in transit, access control).
   CCPA/CPRA: consumer data access/deletion rights — track where PII lives.
-- **Turkey — KVKK, BDDK, MASAK.** KVKK (Turkey's GDPR analogue): consent, data subject
+- **Turkey — KVKK, BDDK, MASAK.** Scope first: these regimes follow the entity’s licensed role and activity, not the customer’s country — BDDK covers banks, TCMB covers payment and e-money institutions, MASAK duties fall on obliged parties. A Turkish user alone only triggers the KVKK analysis (a lawful basis, and a KVKK transfer mechanism for any cross-border transfer). The sector localization below applies only to an in-scope institution; see `regional/turkey-kvkk-bddk-masak.md`. KVKK (Turkey's GDPR analogue): consent, data subject
   rights, VERBİS registration where applicable. **BDDK** banking rules may require
-  **data localization** — customer/financial data kept on infrastructure in Turkey; do
+  **data localization** — for an in-scope bank, its primary and secondary information systems kept on infrastructure in Turkey; do
   not default to an offshore region. **MASAK**: AML/suspicious-transaction reporting —
   your AML pipeline must produce MASAK-compatible reports and retain records.
 - **UK — FCA, UK GDPR.** FCA operational-resilience and consumer-duty expectations;

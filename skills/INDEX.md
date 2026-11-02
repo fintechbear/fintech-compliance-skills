@@ -62,10 +62,12 @@ Each file covers storage-side controls: encryption at rest, column encryption, a
 |---------------|------|
 | Card data | `pci-dss` |
 | Onboarding / transfers | `aml-kyc` + region |
-| EU users | `eu-gdpr-psd2-dora` |
-| US users / reporting | `us-sox-glba-ccpa` |
-| UK users | `uk-fca-gdpr` |
-| Turkey users | `turkey-kvkk-bddk-masak` |
+| Entity regulated in the EU, or EU personal data | `eu-gdpr-psd2-dora` |
+| Entity regulated in the US, or US reporting | `us-sox-glba-ccpa` |
+| Entity regulated in the UK, or UK personal data | `uk-fca-gdpr` |
+| Entity regulated in Turkey, or Turkish personal data | `turkey-kvkk-bddk-masak` |
+
+A user's country alone triggers only the personal-data analysis for that country. Licensing duties (banking, payment/e-money, AML reporting) follow the entity's declared role and activity — see the regional skill.
 | Any audited system | `iso27001-soc2` |
 | A specific language | the matching `languages/<lang>.md` |
 | A specific database | the matching `databases/<db>.md` |
