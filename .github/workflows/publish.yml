@@ -122,4 +122,5 @@ jobs:
 
       - name: Pack-only summary
         if: steps.guard.outputs.publish != 'true'
-        run: echo "Pack-only run: artifact built and retained; nothing was published." >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "Pack-only run - artifact built and retained, nothing was published." >> "$GITHUB_STEP_SUMMARY"
