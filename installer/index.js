@@ -593,6 +593,37 @@ function removeCodexBlock(txt) {
   return txt.replace(MANAGED_SPAN_RE(), '');
 }
 
+// Manifest keys are tree-relative with a leading `skills/`; older installs wrote prefix-less keys.
+function codexNormKey(k) {
+  return k.startsWith('skills/') ? k
+    : /^(core|refusal|global|regional|languages|databases)\//.test(k) ? `skills/${k}`
+    : k === 'INDEX.md' ? 'skills/INDEX.md' : k;
+}
+// Hash every file of a directory tree as relKey -> sha (same hash as copyTree records).
+function hashTree(root, prefix) {
+  const out = {};
+  if (!fs.existsSync(root)) return out;
+  const walk = (dir, rel) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const abs = path.join(dir, e.name); const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) walk(abs, r); else out[r] = sha(fs.readFileSync(abs, 'utf8'));
+    }
+  };
+  walk(root, prefix);
+  return out;
+}
+// AUD-20261102-F05: the single Codex ownership plan used by install, diff and uninstall.
+function codexPlan(target, mode) {
+  const { planCodex } = require('./codex-ownership');
+  const treeRoot = path.join(target, CODEX_ROOT);
+  const disk = hashTree(path.join(treeRoot, 'skills'), 'skills');
+  const pkg = hashTree(SKILLS_DIR, 'skills');
+  return planCodex({
+    disk, pkg, manifestRaw: readIf(path.join(treeRoot, CODEX_MANIFEST)), normKey: codexNormKey, mode,
+    isLegacyFor: (relKey) => { const p = path.join(treeRoot, relKey); return fs.existsSync(p) && isLegacyCodexFile(relKey, fs.readFileSync(p, 'utf8')); },
+  });
+}
+
 function installCodex(targetDir, skills, { force }) {
   mkdirp(targetDir);
   const treeDst = path.join(targetDir, CODEX_ROOT);
@@ -604,21 +635,7 @@ function installCodex(targetDir, skills, { force }) {
   // the user changed, which we are preserving (G1: an edit is NEVER recorded as a managed
   // baseline, or the next run would think it is unchanged package content and overwrite it).
   // Tolerate every older shape: a flat {relKey:hash} map, and prefix-less keys (`core/x.md`).
-  const rawPrev = (() => { try { return JSON.parse(readIf(manifestPath) || '{}'); } catch { return {}; } })();
-  const prevManaged = {};
-  const prevUserEdited = {};
-  const normKey = (k) => (k.startsWith('skills/') ? k
-    : /^(core|refusal|global|regional|languages|databases)\//.test(k) ? `skills/${k}`
-    : k === 'INDEX.md' ? 'skills/INDEX.md' : k);
-  if (rawPrev && typeof rawPrev === 'object' && rawPrev.version >= 2) {
-    for (const [k, v] of Object.entries(rawPrev.managed || {})) prevManaged[normKey(k)] = v;
-    for (const [k, v] of Object.entries(rawPrev.userEdited || {})) prevUserEdited[normKey(k)] = v;
-  } else {
-    // legacy flat map: treat every entry as a managed baseline
-    for (const [k, v] of Object.entries(rawPrev || {})) {
-      if (typeof v === 'string') prevManaged[normKey(k)] = v;
-    }
-  }
+  const prevView = require('./codex-ownership').readManifest(readIf(manifestPath), codexNormKey);
 
   // Stage the new tree in a uniquely-named temp dir; validate; then swap. Preserve unknown + edited files.
   const stage = scratchName(treeDst, 'stage');
@@ -643,33 +660,18 @@ function installCodex(targetDir, skills, { force }) {
           const pkgNow = managed[relKey]; // hash of the fresh package file for this path (if any)
           const preserveTo = () => { const d = path.join(stage, r); mkdirp(path.dirname(d)); fs.copyFileSync(abs, d); };
 
-          if (pkgNow === undefined) {
-            // not a package path at all -> unknown user file -> always preserve (even under --force)
+          // F05: the SAME ownership contract as diff/uninstall decides what to carry over.
+          const { classifyCodexEntry, actionFor } = require('./codex-ownership');
+          const entry = classifyCodexEntry({
+            relKey, diskHash: cur, pkgHash: pkgNow, manifest: prevView,
+            isLegacy: () => isLegacyCodexFile(relKey, fs.readFileSync(abs, 'utf8')),
+          });
+          const act = actionFor(entry, force ? 'install-force' : 'install');
+          if (act === 'preserve') {
             preserveTo();
-            continue;
+            if (entry.state !== 'unknown') { userEdited[relKey] = cur; skipped.push(relKey); } // G1: record the edit
           }
-          if (force) {
-            // explicit overwrite: the fresh package copy already staged wins; nothing to carry.
-            continue;
-          }
-          const wasManaged = Object.prototype.hasOwnProperty.call(prevManaged, relKey);
-          const wasUserEdited = Object.prototype.hasOwnProperty.call(prevUserEdited, relKey);
-          if (cur === pkgNow) {
-            continue; // already equals the new package content -> staged copy wins, no-op
-          }
-          if (wasManaged && cur === prevManaged[relKey]) {
-            continue; // unchanged managed file from a prior run -> upgrade to new package (staged wins)
-          }
-          if (!wasManaged && !wasUserEdited && isLegacyCodexFile(relKey, fs.readFileSync(abs, 'utf8'))) {
-            continue; // G3: unedited file from a manifest-less OLD install -> upgrade to new package
-          }
-          if (wasUserEdited && cur === prevUserEdited[relKey]) {
-            // G1: still the same user edit we preserved before -> keep preserving, re-record as userEdited
-            preserveTo(); userEdited[relKey] = cur; skipped.push(relKey);
-            continue;
-          }
-          // genuine user edit (differs from package, from the managed baseline, and is not a known legacy file)
-          preserveTo(); userEdited[relKey] = cur; skipped.push(relKey);
+          // 'unchanged' / 'update' / 'overwrite': the freshly staged package copy wins.
         }
       };
       walkPrev(treeDst, '');
@@ -855,15 +857,9 @@ function computeInstallDiff(tool, scope, target, home) {
   const skills = listSkillFiles();
   const changes = [];
   if (tool === 'codex') {
-    const treeRoot = path.join(target, CODEX_ROOT);
-    for (const s of skills) {
-      const dest = path.join(treeRoot, 'skills', s.group, s.file);
-      const state = fs.existsSync(dest) ? classify(dest, s) : 'absent';
-      if (state === 'absent') changes.push({ skill: s.name, action: 'create', state });
-      else if (state === 'current') changes.push({ skill: s.name, action: 'unchanged', state });
-      else if (state === 'ours-stale' || state === 'legacy') changes.push({ skill: s.name, action: 'update', state });
-      else if (state === 'user') changes.push({ skill: s.name, action: 'preserve (user-edited)', state });
-    }
+    // F05: manifest-aware plan (raw Markdown + .fcs-manifest.json), never the SKILL.md stamp.
+    const plan = codexPlan(target, 'install');
+    for (const e of plan.entries) changes.push({ skill: e.relKey, action: e.action === 'preserve' ? `preserve (${e.state})` : e.action, state: e.state });
   } else {
     const base = resolveBase(tool, scope, target, home);
     for (const s of skills) {
@@ -898,16 +894,17 @@ function cmdUninstall(flags, tool, scope, target, home) {
   const removed = [], preserved = [], unknownKept = [];
   if (tool === 'codex') {
     const treeRoot = path.join(target, CODEX_ROOT);
-    const manifestPath = path.join(treeRoot, CODEX_MANIFEST);
-    let manifest = null; try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch { /* none */ }
-    for (const s of skills) {
-      const rel = `skills/${s.group}/${s.file}`;
-      const dest = path.join(treeRoot, rel);
-      if (!fs.existsSync(dest)) continue;
-      const state = classify(dest, s);
-      if (state === 'current') { if (!dryRun) fs.rmSync(dest, { force: true }); removed.push(rel); }
-      else { preserved.push(`${rel} (${state})`); } // user-edited/legacy/unknown: keep
+    // F05: remove ONLY files whose ownership the manifest proves and that are unchanged since we
+    // wrote them; user edits, unknown files and anything under a corrupt manifest are kept.
+    const plan = codexPlan(target, 'uninstall');
+    for (const e of plan.entries) {
+      if (e.action === 'remove') { if (!dryRun) fs.rmSync(path.join(treeRoot, e.relKey), { force: true }); removed.push(e.relKey); }
+      else if (e.action === 'preserve') preserved.push(`${e.relKey} (${e.state})`);
     }
+    if (plan.manifest_status === 'corrupt') preserved.push(`${CODEX_MANIFEST} (corrupt: ownership unverifiable, nothing removed on its authority)`);
+    // The manifest itself is ours; drop it only when no managed file remains on disk.
+    const anyKept = plan.entries.some((e) => e.action === 'preserve' && (e.state === 'user_edited' || e.state === 'unverifiable'));
+    if (!dryRun && plan.manifest_status === 'v2' && !anyKept) fs.rmSync(path.join(treeRoot, CODEX_MANIFEST), { force: true });
     // our AGENTS block: remove only the managed block, keep the user's own text
     const agentsPath = path.join(target, 'AGENTS.md');
     if (fs.existsSync(agentsPath)) {
@@ -1073,7 +1070,7 @@ if (require.main === module) {
 }
 
 module.exports = {
-  resolveBase, classify, isLegacyOutput, isLegacyCodexFile, managedContent, mergeCodexBlock, removeCodexBlock, commitFlatInstall, commitTreeSwap, rewriteRelativeLinks,
+  resolveBase, classify, isLegacyOutput, isLegacyCodexFile, managedContent, mergeCodexBlock, removeCodexBlock, commitFlatInstall, commitTreeSwap, codexPlan, rewriteRelativeLinks,
   listSkillFiles, installCodex, installSkillDir, LEGACY_FILE_HASHES,
   parseFrontmatter, frontmatter, parseSkill, MAX_DESCRIPTION,
   BLOCK_START, BLOCK_END, LEGACY_CODEX_MARKER, LEGACY_CODEX_HEADING, CODEX_ROOT, CODEX_MANIFEST,

@@ -10,12 +10,13 @@
     "verify": "node installer/verify.js",
     "test": "node --test installer/test.js",
     "diagnose": "node installer/diagnose.js",
-    "test:release:noncli": "node evals/grader.js && node --test evals/release.selftest.js && node evals/validate-tasks.js && node evals/adapters/isolation.selftest.js && node controls/validate-controls.js && node controls/validate-controls.selftest.js && node controls/migrate-refusal-citations.js --check && node installer/profile-selector.selftest.js && node installer/skill-inventory.selftest.js && node installer/agents-block.selftest.js && node installer/install-txn.selftest.js"
+    "test:release:noncli": "node evals/grader.js && node --test evals/release.selftest.js && node evals/validate-tasks.js && node evals/adapters/isolation.selftest.js && node controls/validate-controls.js && node controls/validate-controls.selftest.js && node controls/migrate-refusal-citations.js --check && node installer/profile-selector.selftest.js && node installer/skill-inventory.selftest.js && node installer/agents-block.selftest.js && node installer/install-txn.selftest.js && node installer/codex-ownership.selftest.js"
   },
   "files": [
     "installer/index.js",
     "installer/diagnose.js",
     "installer/profile-selector.js",
+    "installer/codex-ownership.js",
     "skills/",
     "controls/catalog.json",
     "controls/schema/",
