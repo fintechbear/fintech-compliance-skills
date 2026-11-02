@@ -27,6 +27,9 @@
     "controls/evidence.js",
     "controls/schema/",
     "controls/profiles/",
+    "docs/development/RELEASE_CLOSURE.md",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
     "README.md",
     "LICENSE"
   ],
