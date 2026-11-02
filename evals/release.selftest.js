@@ -147,6 +147,10 @@ test('F12 round 3: every supported keyword has its shape checked at preflight', 
   a.notEqual(validate({}, {type:'object',properties:{opt:{$ref:'#/definitions/s'}},definitions:{s:'string'}}).length, 0);
   a.deepEqual(validate({opt:1}, {type:'object',properties:{opt:{$ref:'#/definitions/n'}},definitions:{n:{type:'integer'}}}), []);
   a.deepEqual(validate({opt:1}, {type:'object',properties:{opt:{$ref:'#/definitions/any'}},definitions:{any:true}}), []);
+  // pure $ref cycles are rejected at preflight (review round 4); a cycle through a real schema is fine
+  a.notEqual(validate({}, {type:'object',properties:{opt:{$ref:'#/definitions/loop'}},definitions:{loop:{$ref:'#/definitions/loop'}}}).length, 0);
+  a.notEqual(validate({}, {type:'object',properties:{opt:{$ref:'#/definitions/a'}},definitions:{a:{$ref:'#/definitions/b'},b:{$ref:'#/definitions/a'}}}).length, 0);
+  a.deepEqual(validate({next:{next:{}}}, {type:'object',properties:{next:{$ref:'#/definitions/n'}},definitions:{n:{type:'object',properties:{next:{$ref:'#/definitions/n'}}}}}), []);
 });
 
 test('F12: invalid keyword contracts fail closed in unvisited optional branches', () => {

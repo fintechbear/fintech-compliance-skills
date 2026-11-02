@@ -125,6 +125,14 @@ function checkKeywordContracts(schema, where, root, errors) {
         const target = resolveRef(schema.$ref, root);
         const isSchema = typeof target === 'boolean' || (target !== null && typeof target === 'object' && !Array.isArray(target));
         if (!isSchema) errors.push(`${where}: $ref '${schema.$ref}' does not point at a schema (got ${typeOf(target)})`);
+        // A chain of pure $ref nodes that loops back (a -> b -> a) never reaches a schema that
+        // evaluates anything; reject it at preflight instead of overflowing the stack later.
+        let cur = target; const chain = new Set([schema.$ref]);
+        while (cur && typeof cur === 'object' && !Array.isArray(cur) && typeof cur.$ref === 'string') {
+          if (chain.has(cur.$ref)) { errors.push(`${where}: cyclic $ref chain with no evaluating schema (${[...chain, cur.$ref].join(' -> ')})`); break; }
+          chain.add(cur.$ref);
+          try { cur = resolveRef(cur.$ref, root); } catch { break; } // reported where that ref is declared
+        }
       } catch (e) { errors.push(`${where}: ${e.message}`); }
     }
   }
