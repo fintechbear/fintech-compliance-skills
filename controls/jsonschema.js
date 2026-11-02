@@ -106,22 +106,54 @@ function validateNode(data, schema, root, pathStr, errors) {
   }
 }
 
+const VALID_TYPE_NAMES = new Set(['string', 'number', 'integer', 'boolean', 'object', 'array', 'null']);
+
+// Validate the CONTRACT of each supported keyword in a schema node, in EVERY branch, so an
+// unenforceable constraint (a dangling $ref, an invalid regex, a non-numeric minLength) fails
+// closed at preflight instead of silently passing when today's data happens to omit that
+// property (F12). This runs once over the whole schema tree before any data is checked.
+function checkKeywordContracts(schema, where, root, errors) {
+  // $ref must resolve against the root document.
+  if (owns(schema, '$ref')) {
+    if (typeof schema.$ref !== 'string') errors.push(`${where}: $ref must be a string`);
+    else { try { resolveRef(schema.$ref, root); } catch (e) { errors.push(`${where}: ${e.message}`); } }
+  }
+  // type must name real JSON types.
+  if (owns(schema, 'type')) {
+    const types = Array.isArray(schema.type) ? schema.type : [schema.type];
+    for (const t of types) if (!VALID_TYPE_NAMES.has(t)) errors.push(`${where}: unknown type '${t}'`);
+  }
+  // pattern must be a string that compiles to a valid RegExp.
+  if (owns(schema, 'pattern')) {
+    if (typeof schema.pattern !== 'string') errors.push(`${where}: pattern must be a string`);
+    else { try { new RegExp(schema.pattern); } catch (e) { errors.push(`${where}: invalid pattern /${schema.pattern}/ (${e.message})`); } }
+  }
+  // minLength / minItems must be non-negative integers.
+  for (const k of ['minLength', 'minItems']) {
+    if (owns(schema, k) && !(Number.isInteger(schema[k]) && schema[k] >= 0)) errors.push(`${where}: ${k} must be a non-negative integer`);
+  }
+  // enum must be a non-empty array; required must be an array of strings.
+  if (owns(schema, 'enum') && !(Array.isArray(schema.enum) && schema.enum.length)) errors.push(`${where}: enum must be a non-empty array`);
+  if (owns(schema, 'required') && !(Array.isArray(schema.required) && schema.required.every((r) => typeof r === 'string'))) errors.push(`${where}: required must be an array of strings`);
+}
+
 // Preflight the entire schema, including optional/unvisited branches, so unsupported
 // constraints never disappear just because today's data omitted the affected property.
-function checkSchema(schema, where, errors, seen = new Set()) {
+function checkSchema(schema, where, root, errors, seen = new Set()) {
   if (typeof schema === 'boolean') return;
   if (!schema || typeof schema !== 'object' || Array.isArray(schema)) { errors.push(`${where}: invalid schema`); return; }
   if (seen.has(schema)) return;
   seen.add(schema);
   assertSupportedSchema(schema, where, errors);
+  checkKeywordContracts(schema, where, root, errors);
   for (const key of ['properties', 'definitions']) {
-    for (const [name, sub] of Object.entries(schema[key] || {})) checkSchema(sub, `${where}/${key}/${name}`, errors, seen);
+    for (const [name, sub] of Object.entries(schema[key] || {})) checkSchema(sub, `${where}/${key}/${name}`, root, errors, seen);
   }
-  if (schema.items !== undefined) checkSchema(schema.items, `${where}/items`, errors, seen);
+  if (schema.items !== undefined) checkSchema(schema.items, `${where}/items`, root, errors, seen);
 }
 function validate(data, schema) {
   const errors = [];
-  checkSchema(schema, '#', errors);
+  checkSchema(schema, '#', schema, errors);
   if (errors.length) return errors;
   try { validateNode(data, schema, schema, '', errors); }
   catch (e) { errors.push(`invalid/unsupported schema: ${e.message}`); }
