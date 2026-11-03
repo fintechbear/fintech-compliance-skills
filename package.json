@@ -55,7 +55,7 @@
   "license": "Apache-2.0",
   "devDependencies": {
     "@iarna/toml": "^2.2.5",
-    "quickjs-emscripten": "^0.31.0"
+    "quickjs-emscripten": "^0.32.0"
   },
   "dependencies": {
     "js-yaml": "^4.3.2"
