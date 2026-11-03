@@ -2,12 +2,24 @@
 // currency. Reject zero/negative/over-precision/overflow and unsupported currencies.
 // Never use a binary float for money — parse the decimal string ourselves.
 
-const MINOR_UNITS: Record<string, number> = {
+// Null-prototype table so inherited Object members (constructor, toString, __proto__,
+// hasOwnProperty, valueOf, ...) are never mistaken for a supported currency. A plain
+// object literal would resolve MINOR_UNITS['constructor'] to Object's constructor via the
+// prototype chain, which is not `undefined` — so those keys would wrongly parse as money.
+const MINOR_UNITS: Record<string, number> = Object.assign(Object.create(null), {
   // exponent (number of decimal places) per ISO 4217 for the currencies this reference supports
   USD: 2, EUR: 2, GBP: 2, TRY: 2,
   JPY: 0,
   KWD: 3, BHD: 3, OMR: 3,
-};
+});
+
+// Single own-property lookup shared by the parser and isSupported, so the two agree on
+// exactly which currencies exist. Returns the exponent, or undefined if not supported.
+function minorUnitExponent(currency: string): number | undefined {
+  if (typeof currency !== 'string') return undefined;
+  if (!Object.prototype.hasOwnProperty.call(MINOR_UNITS, currency)) return undefined;
+  return MINOR_UNITS[currency];
+}
 
 export class MoneyError extends Error {
   constructor(public readonly kind: string, msg: string) { super(msg); }
@@ -18,7 +30,7 @@ export class MoneyError extends Error {
 const MAX_MINOR = 9_000_000_000_000; // 9e12 minor units
 
 export function toMinorUnits(amount: string, currency: string): number {
-  const exp = MINOR_UNITS[currency];
+  const exp = minorUnitExponent(currency);
   if (exp === undefined) throw new MoneyError('unsupported_currency', `unsupported currency ${currency}`);
 
   const m = /^(-?)(\d+)(?:\.(\d+))?$/.exec(amount.trim());
@@ -43,5 +55,5 @@ export function toMinorUnits(amount: string, currency: string): number {
 }
 
 export function isSupported(currency: string): boolean {
-  return MINOR_UNITS[currency] !== undefined;
+  return minorUnitExponent(currency) !== undefined;
 }

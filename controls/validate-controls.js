@@ -7,6 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const { validate } = require('./jsonschema.js');
+const { evidenceKind, checkReviewedAt, REVIEW_MAX_AGE_DAYS } = require('./evidence.js');
 
 const repoRoot = path.resolve(__dirname, '..');
 const errors = [];
@@ -38,12 +39,19 @@ for (const c of catalog.controls) {
       warn(`${c.id}: source_ref '${s.label}' claims verified:true but control review_status is ${c.review_status}`);
     }
   }
-  // broken skill_refs / test_refs
+  // AUD-20261102-F13: reviewed_at must be a real ISO date, not in the future; stale reviews visible.
+  const rv = checkReviewedAt(c.reviewed_at);
+  if (!rv.ok) err(`${c.id}: ${rv.error}`);
+  else if (rv.stale && c.review_status === 'verified') warn(`${c.id}: verified review is ${rv.ageDays} days old (policy: re-review within ${REVIEW_MAX_AGE_DAYS} days)`);
+  // broken skill_refs / test_refs / document_refs
   for (const sk of (c.skill_refs || [])) if (!fs.existsSync(rel(sk))) err(`${c.id}: skill_ref not found: ${sk}`);
   for (const tr of (c.test_refs || [])) {
     const p = rel(tr);
     if (!fs.existsSync(p) && !fs.existsSync(p.replace(/[\\/]$/, ''))) err(`${c.id}: test_ref not found: ${tr}`);
+    // F13: a file existing is not a test running; and documentation is never an executable test.
+    if (evidenceKind(tr) !== 'executable') err(`${c.id}: test_ref '${tr}' is not executable evidence (put Markdown/rubric files in document_refs)`);
   }
+  for (const dr of (c.document_refs || [])) if (!fs.existsSync(rel(dr))) err(`${c.id}: document_ref not found: ${dr}`);
 }
 
 // --- 2. Unknown FCS ids cited anywhere in skills/ ---

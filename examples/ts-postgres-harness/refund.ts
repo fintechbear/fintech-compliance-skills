@@ -82,12 +82,59 @@ class ProviderDouble {
 }
 const provider = new ProviderDouble();
 
+// AUD-20261102-F10: cancel/void is ONE conditional atomic transition, not "read then write".
+// The old code did SELECT lifecycle, then an UNCONDITIONAL UPDATE ... SET 'voided'. A capture that
+// committed between the two was overwritten: captured -> voided (a lifecycle regression). Now the
+// UPDATE itself carries the guard (WHERE lifecycle='authorized') and RETURNING tells us whether we
+// won. Under READ COMMITTED, if a concurrent capture holds the row lock, our UPDATE waits, then
+// re-checks the WHERE on the committed row and matches 0 rows — the loser gets a clear result.
+// The transition audit row is written in the SAME transaction as the state change (FCS-AUDIT-001).
 async function cancel(paymentId: string, tenant: string): Promise<'voided'> {
-  const r = await pool.query(`SELECT lifecycle FROM payments WHERE id=$1 AND tenant_id=$2`, [paymentId, tenant]);
-  if (!r.rowCount) throw new Error('payment not found in tenant scope');
-  if (r.rows[0].lifecycle !== 'authorized') throw new Error(`cannot cancel/void: payment is ${r.rows[0].lifecycle}, not authorized (use refund after capture)`);
-  await pool.query(`UPDATE payments SET lifecycle='voided' WHERE id=$1 AND tenant_id=$2`, [paymentId, tenant]);
-  return 'voided';
+  const c = await pool.connect();
+  try {
+    await c.query('BEGIN');
+    const u = await c.query(
+      `UPDATE payments SET lifecycle='voided'
+         WHERE id=$1 AND tenant_id=$2 AND lifecycle='authorized'
+       RETURNING captured_minor`, [paymentId, tenant]);
+    if (u.rowCount !== 1) {
+      await c.query('ROLLBACK');
+      const s = await pool.query(`SELECT lifecycle FROM payments WHERE id=$1 AND tenant_id=$2`, [paymentId, tenant]);
+      if (!s.rowCount) throw new Error('payment not found in tenant scope');
+      throw new Error(`cannot cancel/void: payment is ${s.rows[0].lifecycle}, not authorized (use refund after capture)`);
+    }
+    await c.query(
+      `INSERT INTO refund_audit(tenant_id,payment_id,idem_key,event,amount_minor) VALUES($1,$2,'cancel','voided',$3)`,
+      [tenant, paymentId, u.rows[0].captured_minor]);
+    await c.query('COMMIT');
+    return 'voided';
+  } catch (e) {
+    try { await c.query('ROLLBACK'); } catch { /* already rolled back */ }
+    throw e;
+  } finally { c.release(); }
+}
+
+// Capture (test surface for the race): the same conditional-transition pattern.
+async function capture(paymentId: string, tenant: string, client?: import('pg').PoolClient): Promise<boolean> {
+  const q = client ?? pool;
+  const u = await q.query(
+    `UPDATE payments SET lifecycle='captured' WHERE id=$1 AND tenant_id=$2 AND lifecycle='authorized' RETURNING id`,
+    [paymentId, tenant]);
+  return u.rowCount === 1;
+}
+
+// Deterministic barrier: wait until some backend is BLOCKED on a lock for this query text, so the
+// race is forced (not left to timing). Bounded; no fixed sleep decides the outcome.
+async function waitForLockWaiter(fragment: string, timeoutMs = 10000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const r = await pool.query(
+      `SELECT 1 FROM pg_stat_activity WHERE wait_event_type='Lock' AND query LIKE $1 AND pid <> pg_backend_pid()`,
+      [`%${fragment}%`]);
+    if (r.rowCount) return;
+    if (Date.now() > deadline) throw new Error(`barrier: no backend waiting on lock for "${fragment}"`);
+    await new Promise((res) => setImmediate(res));
+  }
 }
 
 type RefundResult = 'confirmed' | 'rejected_exceeds_cap' | 'rejected_lifecycle' | 'rejected_scope'
@@ -261,6 +308,46 @@ async function main() {
   await check('cancel/void: refused on an already-captured payment (not a synonym for refund)', async () => {
     await seedPayment('p8', 'T1', 1000, 'captured');
     try { await cancel('p8', 'T1'); return false; } catch (e) { return /not authorized/.test((e as Error).message); }
+  });
+  // AUD-20261102-F10: forced capture/cancel race on two real connections with a deterministic
+  // barrier (pg_stat_activity lock-wait), not a sleep. Capture commits first while cancel is
+  // already blocked on the row: cancel must LOSE with a clear result, and the payment must stay
+  // captured (no captured -> voided regression) with no 'voided' audit row.
+  await check('cancel/capture race: capture wins, cancel loses clearly, no captured->voided regression', async () => {
+    await seedPayment('race1', 'T1', 1000, 'authorized');
+    const holder = await pool.connect();
+    try {
+      await holder.query('BEGIN');
+      const captured = await capture('race1', 'T1', holder);          // holds the row lock, uncommitted
+      const pending = cancel('race1', 'T1').then(() => 'voided', (e) => (e as Error).message);
+      await waitForLockWaiter(`lifecycle='voided'`);                   // cancel is now blocked on the row
+      await holder.query('COMMIT');
+      const outcome = await pending;
+      const s = await pool.query(`SELECT lifecycle FROM payments WHERE id='race1' AND tenant_id='T1'`);
+      const a = await pool.query(`SELECT count(*)::int AS n FROM refund_audit WHERE payment_id='race1' AND event='voided'`);
+      return captured && /payment is captured/.test(outcome) && s.rows[0].lifecycle === 'captured' && a.rows[0].n === 0;
+    } finally { holder.release(); }
+  });
+  await check('cancel/capture race: both contend behind a lock; exactly one wins, state matches the winner', async () => {
+    await seedPayment('race2', 'T1', 1000, 'authorized');
+    const holder = await pool.connect();
+    const capConn = await pool.connect();
+    try {
+      await holder.query('BEGIN');
+      await holder.query(`SELECT 1 FROM payments WHERE id='race2' AND tenant_id='T1' FOR UPDATE`);
+      const pCancel = cancel('race2', 'T1').then(() => true, () => false);
+      const pCapture = capture('race2', 'T1', capConn);
+      await waitForLockWaiter(`lifecycle='voided'`);
+      await waitForLockWaiter(`lifecycle='captured'`);
+      await holder.query('COMMIT');                                    // release; both now race on the row
+      const [cancelled, captured] = await Promise.all([pCancel, pCapture]);
+      const s = await pool.query(`SELECT lifecycle FROM payments WHERE id='race2' AND tenant_id='T1'`);
+      const a = await pool.query(`SELECT count(*)::int AS n FROM refund_audit WHERE payment_id='race2' AND event='voided'`);
+      const exactlyOne = (cancelled ? 1 : 0) + (captured ? 1 : 0) === 1;
+      const consistent = cancelled ? (s.rows[0].lifecycle === 'voided' && a.rows[0].n === 1)
+                                   : (s.rows[0].lifecycle === 'captured' && a.rows[0].n === 0);
+      return exactlyOne && consistent;
+    } finally { holder.release(); capConn.release(); }
   });
   await check('refund: a payment in another tenant is out of scope (FCS-AUTHZ-001)', async () => {
     await seedPayment('p9', 'T1', 1000, 'captured');

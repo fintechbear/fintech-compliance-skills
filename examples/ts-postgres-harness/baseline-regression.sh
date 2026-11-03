@@ -73,7 +73,7 @@ run_probe() {
 }
 
 # One probe per DB-bound finding. Each exits 0 ONLY if it observed the OLD bug.
-for p in r01-self-transfer.ts r02-no-authz.ts r06-refund-number.ts r09-refund-conflict.ts r10-webhook-rangeerror.ts r12-retention-race.ts; do
+for p in r01-self-transfer.ts r02-no-authz.ts r06-refund-number.ts r09-refund-conflict.ts r10-webhook-rangeerror.ts r12-retention-race.ts f10-cancel-race.ts; do
   [ -f "baseline-probes/$p" ] && run_probe "$p"
 done
 

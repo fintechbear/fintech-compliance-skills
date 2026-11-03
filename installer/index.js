@@ -179,35 +179,38 @@ function rewriteRelativeLinks(body) {
 // rewritten; only inline-code resource paths and markdown links are pinned. The controls/
 // resources are ALSO shipped in the package (package.json "files"), but a skill installed
 // into a user's agent dir cannot see the package tree, so the pinned URL is the portable link.
-function pkgVersion() { try { return require(path.join(REPO_ROOT, 'package.json')).version; } catch { return '0.0.0'; } }
-const SOURCE_REPO = 'https://github.com/fintechbear/fintech-compliance-skills';
-function sourceUrl(relPath) { return `${SOURCE_REPO}/blob/v${pkgVersion()}/${relPath}`; }
-const RESOURCE_RE = /\b((?:controls|examples)\/[A-Za-z0-9._/-]+)/g;
-function rewriteResourceRefs(body) {
-  // operate OUTSIDE fenced/inline code (same segmentation as rewriteRelativeLinks)
-  const parts = body.split(/(```[\s\S]*?```|`[^`\n]*`)/g);
-  const rewriteSeg = (seg, isCode) => {
-    if (isCode) {
-      // inside INLINE code we turn a bare resource path into a pinned URL in parentheses after it,
-      // but only for a standalone `controls/...`/`examples/...` chip — never touch code blocks.
-      return seg;
-    }
-    // bare resource paths in prose -> a markdown link to the pinned source
-    return seg.replace(RESOURCE_RE, (m) => `[${m}](${sourceUrl(m)})`);
-  };
-  // isCode is true for odd indices; we leave fenced blocks fully intact, and for inline-code
-  // chips we append a pinned link right after the closing backtick when the chip is a resource.
+// AUD-20261102-F07: one portability contract for EVERY target (flat SKILL.md and Codex tree).
+// A repo resource reference resolves to an IMMUTABLE full-commit URL taken from the package's
+// explicit source identity (installer/source.js). If this build is not pinned, the reference is
+// kept as text with an explicit "not pinned" note — never a guessed version tag, never main.
+// Fenced code, inline code text and existing Markdown links are never altered.
+const { resolveSource, resourceUrl } = require('./source');
+const RESOURCE_RE = /\b((?:controls|examples)\/[A-Za-z0-9._/-]*[A-Za-z0-9_/-])/g;
+const UNPINNED_NOTE = ' (repo resource; this build is not pinned to a commit — open it at the commit you installed from)';
+function rewriteResourceRefs(body, source = resolveSource()) {
+  // segments: fenced code | inline code | existing markdown link [..](..)  — all kept verbatim
+  const parts = body.split(/(```[\s\S]*?```|`[^`\n]*`|\[[^\]\n]*\]\([^)\n]*\))/g);
+  const link = (rel) => { const u = resourceUrl(source, rel); return u ? `[source](${u})` : null; };
   let out = '';
+  let noted = false;
   for (let i = 0; i < parts.length; i++) {
     const seg = parts[i];
-    const isCode = i % 2 === 1;
-    if (!isCode) { out += rewriteSeg(seg, false); continue; }
-    // inline/fenced code: keep verbatim, but if an INLINE chip (single backtick) names a resource
-    // path, add a pinned link after it so the reference is reachable without altering the chip.
-    const inlineChip = /^`([^`\n]+)`$/.exec(seg);
-    if (inlineChip && /^(controls|examples)\//.test(inlineChip[1].trim())) {
-      const rel = inlineChip[1].trim().replace(/[.,;:)]+$/, '');
-      out += seg + ` ([pinned](${sourceUrl(rel)}))`;
+    if (i % 2 === 0) {
+      // prose: a bare resource path becomes a link (pinned) or gets one note (unpinned)
+      out += seg.replace(RESOURCE_RE, (m) => {
+        const u = resourceUrl(source, m);
+        if (u) return `[${m}](${u})`;
+        if (noted) return m;
+        noted = true; return m + UNPINNED_NOTE;
+      });
+      continue;
+    }
+    const chip = /^`([^`\n]+)`$/.exec(seg);
+    const rel = chip && chip[1].trim().replace(/[.,;:)]+$/, '');
+    if (rel && /^(controls|examples)\//.test(rel)) {
+      const l = link(rel);
+      if (l) out += `${seg} (${l})`;
+      else { out += seg + (noted ? '' : UNPINNED_NOTE); noted = true; }
     } else out += seg;
   }
   return out;
@@ -350,6 +353,90 @@ function classify(dest, skill) {
   return isLegacyOutput(skill, prev) ? 'legacy' : 'user';
 }
 
+// ---------- AUD-20261102-F06: transactional commit helpers (fs ops injected for tests) ----------
+const REAL_OPS = {
+  exists: (p) => fs.existsSync(p),
+  mkdirp: (d) => fs.mkdirSync(d, { recursive: true }),
+  writeFile: (p, data) => fs.writeFileSync(p, data, 'utf8'),
+  copyFile: (a, b) => fs.copyFileSync(a, b),
+  rename: (a, b) => fs.renameSync(a, b),
+  rm: (p) => fs.rmSync(p, { recursive: true, force: true }),
+};
+function combinedError(first, extra, recovery) {
+  const msg = [first.message, ...extra.map((x) => `rollback step failed: ${x.message}`)].join('; ')
+    + (recovery.length ? `; recovery copies kept at: ${recovery.join(', ')}` : '');
+  const err = new Error(msg);
+  err.cause = first; err.rollbackErrors = extra; err.recovery = recovery;
+  return err;
+}
+
+// (a) Flat SKILL.md install as one transaction. Phase 1 writes every new file to a temp name
+// (nothing active changes). Phase 2 moves each active file aside to a journal copy, then the temp
+// into place. Any failure restores every already-committed file from its journal copy in reverse.
+// A journal copy is deleted only after its restore (or the whole commit) is proven to succeed.
+function commitFlatInstall(staged, ops = REAL_OPS) {
+  const tmps = [];
+  try {
+    for (const st of staged) {
+      ops.mkdirp(st.dir);
+      if (st.migrate && ops.exists(st.dest) && !ops.exists(st.dest + '.bak')) ops.copyFile(st.dest, st.dest + '.bak'); // never overwrite a user backup
+      const tmp = st.dest + '.fcs-tmp';
+      ops.writeFile(tmp, st.data);
+      tmps.push(tmp);
+    }
+  } catch (e) {
+    const extra = [];
+    for (const t of tmps) { try { ops.rm(t); } catch (x) { extra.push(x); } }
+    throw extra.length ? combinedError(e, extra, []) : e;
+  }
+  const journal = []; // { dest, prev|null }
+  try {
+    for (const st of staged) {
+      let prev = null;
+      if (ops.exists(st.dest)) { prev = st.dest + '.fcs-prev'; ops.rename(st.dest, prev); }
+      journal.push({ dest: st.dest, prev });
+      ops.rename(st.dest + '.fcs-tmp', st.dest);
+      journal[journal.length - 1].done = true;
+    }
+  } catch (e) {
+    const extra = []; const recovery = [];
+    for (const j of journal.slice().reverse()) {
+      try {
+        if (j.done && ops.exists(j.dest)) ops.rm(j.dest);
+        if (j.prev) { ops.rename(j.prev, j.dest); if (!ops.exists(j.dest)) throw new Error(`restore of ${j.dest} not visible`); }
+      } catch (x) { extra.push(x); if (j.prev && ops.exists(j.prev)) recovery.push(j.prev); }
+    }
+    for (const st of staged) { try { if (ops.exists(st.dest + '.fcs-tmp')) ops.rm(st.dest + '.fcs-tmp'); } catch (x) { extra.push(x); } }
+    throw combinedError(e, extra, recovery);
+  }
+  for (const j of journal) if (j.prev) { try { ops.rm(j.prev); } catch { /* committed; leftover journal copy is harmless */ } }
+}
+
+// (b) Codex tree + AGENTS.md swap. The old tree is moved to `backupName`. If the swap fails, every
+// rollback step is attempted independently; the backup is removed ONLY when the restore is proven
+// (the old tree is back at treeDst). Otherwise it is kept and named in the error.
+function commitTreeSwap({ treeDst, stage, agentsTmp, dest, backupName }, ops = REAL_OPS) {
+  let backup = null;
+  if (ops.exists(treeDst)) { ops.rename(treeDst, backupName); backup = backupName; }
+  try {
+    ops.rename(stage, treeDst);
+    ops.rename(agentsTmp, dest);
+  } catch (e) {
+    const extra = [];
+    try { if (ops.exists(agentsTmp)) ops.rm(agentsTmp); } catch (x) { extra.push(x); }
+    if (backup) {
+      let restored = false;
+      try { if (ops.exists(treeDst)) ops.rm(treeDst); } catch (x) { extra.push(x); }
+      try { ops.rename(backup, treeDst); restored = ops.exists(treeDst) && !ops.exists(backup); } catch (x) { extra.push(x); }
+      if (!restored) throw combinedError(e, extra, [backup]);   // backup is the only recovery copy: keep it
+    } else {
+      try { if (ops.exists(treeDst)) ops.rm(treeDst); } catch (x) { extra.push(x); }
+    }
+    throw extra.length ? combinedError(e, extra, []) : e;
+  }
+  if (backup) { try { ops.rm(backup); } catch { /* committed; stale backup is harmless */ } }
+}
+
 function installSkillDir(baseDir, skills, { force }) {
   const res = { installed: 0, migrated: [], skipped: [], unchanged: 0, backups: [] };
   // Stage classification first, then commit, so a mid-run failure leaves the old install intact.
@@ -363,20 +450,17 @@ function installSkillDir(baseDir, skills, { force }) {
     const content = managedContent(s);
     staged.push({ dir, dest, data: content + stampFor(content), migrate: cls === 'legacy', name: s.name });
   }
-  // commit
-  for (const st of staged) {
-    mkdirp(st.dir);
-    if (st.migrate && fs.existsSync(st.dest)) {
-      const bak = st.dest + '.bak';
-      if (!fs.existsSync(bak)) fs.copyFileSync(st.dest, bak); // never overwrite an existing user backup
-      res.backups.push(bak);
-    }
-    const tmp = st.dest + '.tmp';
-    fs.writeFileSync(tmp, st.data, 'utf8');
-    fs.renameSync(tmp, st.dest);          // atomic replace on same volume
-    if (st.migrate) res.migrated.push(st.name); else res.installed++;
-  }
+  // commit as ONE transaction (F06a): a late failure restores every file already replaced.
+  for (const st of staged) if (st.migrate && fs.existsSync(st.dest)) res.backups.push(st.dest + '.bak');
+  commitFlatInstall(staged);
+  for (const st of staged) { if (st.migrate) res.migrated.push(st.name); else res.installed++; }
   return res;
+}
+
+// F07: the Codex tree gets the SAME resource-reference contract as flat installs. Only Markdown
+// is transformed; the manifest records the hash of exactly what is written.
+function codexFileContent(relKey, buf) {
+  return relKey.endsWith('.md') ? Buffer.from(rewriteResourceRefs(buf.toString('utf8')), 'utf8') : buf;
 }
 
 // ---------- Codex installer ----------
@@ -389,7 +473,7 @@ function copyTree(srcRoot, dstRoot, manifest) {
       const d = path.join(dst, entry.name);
       const r = rel ? `${rel}/${entry.name}` : entry.name;
       if (entry.isDirectory()) walk(s, d, r);
-      else { const data = fs.readFileSync(s); fs.writeFileSync(d, data); manifest[r] = sha(data.toString('utf8')); }
+      else { const data = codexFileContent(r, fs.readFileSync(s)); fs.writeFileSync(d, data); manifest[r] = sha(data.toString('utf8')); }
     }
   };
   walk(srcRoot, dstRoot, 'skills'); // keys become skills/<group>/<file>
@@ -444,13 +528,24 @@ const LEGACY_CODEX_CLOSING = 'follow its Do / Never / examples';
 // because user instructions legitimately reference skills/ paths too. If a heading is found
 // but no closing blockquote note follows it (shape we don't recognise), we DO NOT delete to
 // EOF — we leave that heading in place and report it, rather than destroying user text.
+// AUD-20261102-F06(c): text OUTSIDE our managed markers is user text and is preserved
+// byte-for-byte (CRLF, runs of blank lines, trailing spaces). We never normalise the whole
+// file. Only the marker-delimited span (plus the single newline that terminates it) is ours.
+const MANAGED_SPAN_RE = () => new RegExp(`${escapeRe(BLOCK_START)}[\\s\\S]*?${escapeRe(BLOCK_END)}(?:\\r?\\n)?`, 'g');
 function mergeCodexBlock(existing, block) {
   let out = existing;
   let ambiguous = false;
 
-  // 1. Remove every one of OUR managed blocks (handles duplicates) — these are marker-delimited.
-  const managedRe = new RegExp(`\\n*${escapeRe(BLOCK_START)}[\\s\\S]*?${escapeRe(BLOCK_END)}\\n*`, 'g');
-  out = out.replace(managedRe, '\n');
+  // 1. Replace the FIRST managed block in place; drop any duplicate managed spans exactly.
+  //    No surrounding whitespace is consumed or rewritten.
+  let placeholder = null;
+  let seen = 0;
+  let keptSepTag = 0;
+  out = out.replace(MANAGED_SPAN_RE(), (span) => {
+    seen++;
+    if (seen === 1) { keptSepTag = sepTagOf(span); placeholder = '\u0000FCS_BLOCK\u0000'; return placeholder; }
+    return '';
+  });
 
   // 2. Remove every LEGACY (marker-less) generated section by its structural boundary.
   const lines = out.split('\n');
@@ -492,10 +587,64 @@ function mergeCodexBlock(existing, block) {
     i = closeIdx; // drop [heading-or-marker .. closeIdx]; outer ++ resumes after it (user text)
   }
 
-  out = kept.join('\n').replace(/\s*$/, '');
-  out = (out ? out + '\n\n' : '') + `${block}\n`;
-  out = out.replace(/\n{3,}/g, '\n\n');
+  out = kept.join('\n');   // split/join on '\n' is lossless for every kept line (CR stays)
+  if (placeholder !== null && out.includes(placeholder)) {
+    // In place: keep the separator record the first install wrote, so uninstall stays exact.
+    out = out.replace(placeholder, `${withSepTag(block, keptSepTag)}\n`);
+  } else {
+    // Append only: existing bytes are untouched; add just enough separator to start a new paragraph.
+    // The separator is OURS, so its length is recorded INSIDE the managed block and uninstall
+    // removes exactly those newlines (review O-6: a file without a trailing newline).
+    const sep = out === '' ? '' : out.endsWith('\n\n') || out.endsWith('\r\n\r\n') ? '' : out.endsWith('\n') ? '\n' : '\n\n';
+    out = out + sep + `${withSepTag(block, sep.length)}\n`;
+  }
   return ambiguous ? { text: out, ambiguous: true } : out;
+}
+
+// Separator record kept inside the managed block: `<!-- fcs-sep:N -->` right after BLOCK_START.
+const SEP_TAG_RE = /<!-- fcs-sep:(\d) -->/;
+function sepTagOf(span) { const m = SEP_TAG_RE.exec(span); return m ? Number(m[1]) : 0; }
+function withSepTag(block, n) {
+  const clean = block.replace(new RegExp(`\\r?\\n?${SEP_TAG_RE.source}`), '');
+  return n > 0 ? clean.replace(BLOCK_START, `${BLOCK_START}\n<!-- fcs-sep:${n} -->`) : clean;
+}
+
+// Remove ONLY our managed span plus the separator newlines we recorded adding; every other byte
+// stays as the user left it (F06c).
+function removeCodexBlock(txt) {
+  return txt.replace(MANAGED_SPAN_RE(), (span) => `\u0000FCS_CUT${sepTagOf(span)}\u0000`).replace(/(\n*)\u0000FCS_CUT(\d)\u0000/g, (_m, nl, n) => nl.slice(0, Math.max(0, nl.length - Number(n))));
+}
+
+// Manifest keys are tree-relative with a leading `skills/`; older installs wrote prefix-less keys.
+function codexNormKey(k) {
+  return k.startsWith('skills/') ? k
+    : /^(core|refusal|global|regional|languages|databases)\//.test(k) ? `skills/${k}`
+    : k === 'INDEX.md' ? 'skills/INDEX.md' : k;
+}
+// Hash every file of a directory tree as relKey -> sha (same hash as copyTree records).
+function hashTree(root, prefix, transform) {
+  const out = {};
+  if (!fs.existsSync(root)) return out;
+  const walk = (dir, rel) => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      const abs = path.join(dir, e.name); const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) walk(abs, r);
+      else out[r] = sha((transform ? transform(r, fs.readFileSync(abs)) : fs.readFileSync(abs)).toString('utf8'));
+    }
+  };
+  walk(root, prefix);
+  return out;
+}
+// AUD-20261102-F05: the single Codex ownership plan used by install, diff and uninstall.
+function codexPlan(target, mode) {
+  const { planCodex } = require('./codex-ownership');
+  const treeRoot = path.join(target, CODEX_ROOT);
+  const disk = hashTree(path.join(treeRoot, 'skills'), 'skills');
+  const pkg = hashTree(SKILLS_DIR, 'skills', codexFileContent);   // hash of what install WRITES
+  return planCodex({
+    disk, pkg, manifestRaw: readIf(path.join(treeRoot, CODEX_MANIFEST)), normKey: codexNormKey, mode,
+    isLegacyFor: (relKey) => { const p = path.join(treeRoot, relKey); return fs.existsSync(p) && isLegacyCodexFile(relKey, fs.readFileSync(p, 'utf8')); },
+  });
 }
 
 function installCodex(targetDir, skills, { force }) {
@@ -509,21 +658,7 @@ function installCodex(targetDir, skills, { force }) {
   // the user changed, which we are preserving (G1: an edit is NEVER recorded as a managed
   // baseline, or the next run would think it is unchanged package content and overwrite it).
   // Tolerate every older shape: a flat {relKey:hash} map, and prefix-less keys (`core/x.md`).
-  const rawPrev = (() => { try { return JSON.parse(readIf(manifestPath) || '{}'); } catch { return {}; } })();
-  const prevManaged = {};
-  const prevUserEdited = {};
-  const normKey = (k) => (k.startsWith('skills/') ? k
-    : /^(core|refusal|global|regional|languages|databases)\//.test(k) ? `skills/${k}`
-    : k === 'INDEX.md' ? 'skills/INDEX.md' : k);
-  if (rawPrev && typeof rawPrev === 'object' && rawPrev.version >= 2) {
-    for (const [k, v] of Object.entries(rawPrev.managed || {})) prevManaged[normKey(k)] = v;
-    for (const [k, v] of Object.entries(rawPrev.userEdited || {})) prevUserEdited[normKey(k)] = v;
-  } else {
-    // legacy flat map: treat every entry as a managed baseline
-    for (const [k, v] of Object.entries(rawPrev || {})) {
-      if (typeof v === 'string') prevManaged[normKey(k)] = v;
-    }
-  }
+  const prevView = require('./codex-ownership').readManifest(readIf(manifestPath), codexNormKey);
 
   // Stage the new tree in a uniquely-named temp dir; validate; then swap. Preserve unknown + edited files.
   const stage = scratchName(treeDst, 'stage');
@@ -548,33 +683,18 @@ function installCodex(targetDir, skills, { force }) {
           const pkgNow = managed[relKey]; // hash of the fresh package file for this path (if any)
           const preserveTo = () => { const d = path.join(stage, r); mkdirp(path.dirname(d)); fs.copyFileSync(abs, d); };
 
-          if (pkgNow === undefined) {
-            // not a package path at all -> unknown user file -> always preserve (even under --force)
+          // F05: the SAME ownership contract as diff/uninstall decides what to carry over.
+          const { classifyCodexEntry, actionFor } = require('./codex-ownership');
+          const entry = classifyCodexEntry({
+            relKey, diskHash: cur, pkgHash: pkgNow, manifest: prevView,
+            isLegacy: () => isLegacyCodexFile(relKey, fs.readFileSync(abs, 'utf8')),
+          });
+          const act = actionFor(entry, force ? 'install-force' : 'install');
+          if (act === 'preserve') {
             preserveTo();
-            continue;
+            if (entry.state !== 'unknown') { userEdited[relKey] = cur; skipped.push(relKey); } // G1: record the edit
           }
-          if (force) {
-            // explicit overwrite: the fresh package copy already staged wins; nothing to carry.
-            continue;
-          }
-          const wasManaged = Object.prototype.hasOwnProperty.call(prevManaged, relKey);
-          const wasUserEdited = Object.prototype.hasOwnProperty.call(prevUserEdited, relKey);
-          if (cur === pkgNow) {
-            continue; // already equals the new package content -> staged copy wins, no-op
-          }
-          if (wasManaged && cur === prevManaged[relKey]) {
-            continue; // unchanged managed file from a prior run -> upgrade to new package (staged wins)
-          }
-          if (!wasManaged && !wasUserEdited && isLegacyCodexFile(relKey, fs.readFileSync(abs, 'utf8'))) {
-            continue; // G3: unedited file from a manifest-less OLD install -> upgrade to new package
-          }
-          if (wasUserEdited && cur === prevUserEdited[relKey]) {
-            // G1: still the same user edit we preserved before -> keep preserving, re-record as userEdited
-            preserveTo(); userEdited[relKey] = cur; skipped.push(relKey);
-            continue;
-          }
-          // genuine user edit (differs from package, from the managed baseline, and is not a known legacy file)
-          preserveTo(); userEdited[relKey] = cur; skipped.push(relKey);
+          // 'unchanged' / 'update' / 'overwrite': the freshly staged package copy wins.
         }
       };
       walkPrev(treeDst, '');
@@ -611,33 +731,16 @@ function installCodex(targetDir, skills, { force }) {
 
     // commit: swap tree, then rename AGENTS.md into place. Keep the tree backup until BOTH
     // the tree swap AND the AGENTS.md rename succeed (F03), so any failure rolls back cleanly.
-    if (fs.existsSync(treeDst)) {
-      backup = scratchName(treeDst, 'old');
-      fs.rmSync(backup, { recursive: true, force: true });
-      fs.renameSync(treeDst, backup);
-    }
+    // F06b: the helper owns the backup's whole lifetime. It deletes the backup only after a
+    // successful commit or a PROVEN restore; on any failed rollback step it keeps it and names it.
+    const backupName = scratchName(treeDst, 'old');
     try {
-      fs.renameSync(stage, treeDst);
-      fs.renameSync(agentsTmp, dest); // atomic replace on the same volume; no partial active file
+      commitTreeSwap({ treeDst, stage, agentsTmp, dest, backupName });
       agentsTmp = null;               // consumed
     } catch (e) {
-      try { if (agentsTmp) { fs.rmSync(agentsTmp, { force: true }); agentsTmp = null; } } catch { /* best effort */ }
-      fs.rmSync(treeDst, { recursive: true, force: true });
-      if (backup && fs.existsSync(backup)) {
-        try {
-          fs.renameSync(backup, treeDst); // rollback tree
-          backup = null;
-        } catch (rollbackErr) {
-          // G4-E: rollback itself failed. DO NOT delete the backup — it is the only recovery
-          // data left. Leave it on disk and surface a clear error naming where it is.
-          rollbackFailed = true;
-          const err = new Error(`${e.message}; rollback also failed (${rollbackErr.message}); recovery copy kept at ${backup}`);
-          throw err;
-        }
-      }
+      if (e.recovery && e.recovery.length) rollbackFailed = true;
       throw e;
     }
-    if (backup) { fs.rmSync(backup, { recursive: true, force: true }); backup = null; }
     return { where: skillsDst, skipped, ambiguous: agentsAmbiguous };
   } finally {
     fs.rmSync(stage, { recursive: true, force: true });
@@ -688,9 +791,13 @@ function loadCatalogSafe() {
 function cmdList(flags) {
   const skills = listSkillFiles();
   const catalog = loadCatalogSafe();
+  // AUD-20261102-F13: count EXECUTABLE tests separately from document/rubric evidence; a Markdown
+  // reference never makes a control "with tests".
+  const { summarizeEvidence } = require('../controls/evidence');
   const bySkill = {}; // skill path -> controls citing it
   for (const c of catalog.controls) for (const sr of (c.skill_refs || [])) {
-    (bySkill[sr] = bySkill[sr] || []).push({ id: c.id, review_status: c.review_status, has_tests: (c.test_refs || []).length > 0 });
+    const ev = summarizeEvidence(c);
+    (bySkill[sr] = bySkill[sr] || []).push({ id: c.id, review_status: c.review_status, has_tests: ev.executable_tests > 0, has_docs: ev.document_evidence > 0 });
   }
   const rows = skills.map((s) => {
     const parsed = parseSkill(s.abs);
@@ -702,7 +809,8 @@ function cmdList(flags) {
       controls: controls.map((c) => c.id),
       verified_controls: controls.filter((c) => c.review_status === 'verified').length,
       needs_review_controls: controls.filter((c) => c.review_status === 'needs_review').length,
-      controls_with_tests: controls.filter((c) => c.has_tests).length,
+      controls_with_tests: controls.filter((c) => c.has_tests).length,              // executable only
+      controls_with_document_evidence_only: controls.filter((c) => !c.has_tests && c.has_docs).length,
     };
   });
   if (flags['--json']) { console.log(JSON.stringify({ skills: rows }, null, 2)); return 0; }
@@ -711,7 +819,7 @@ function cmdList(flags) {
     console.log(`  ${r.name}  (${r.group})`);
     console.log(`    ${r.description}`);
     console.log(`    controls: ${r.controls.join(', ') || '(none)'}`);
-    console.log(`    evidence: ${r.verified_controls} verified, ${r.needs_review_controls} needs-review, ${r.controls_with_tests} with tests\n`);
+    console.log(`    evidence: ${r.verified_controls} verified, ${r.needs_review_controls} needs-review, ${r.controls_with_tests} with executable tests, ${r.controls_with_document_evidence_only} with documents only\n`);
   }
   return 0;
 }
@@ -730,48 +838,44 @@ function cmdExplain(flags, positional) {
   const profile = JSON.parse(fs.readFileSync(pPath, 'utf8'));
   const catalog = loadCatalogSafe();
 
-  // Selection is EXPLICIT and auditable: a control is selected when the profile's declared
-  // data_categories / stack name a skill the control cites, or the control is a global red line.
-  const roleDeclared = profile.entity_role && profile.entity_role.declared === true;
-  const dataCats = profile.data_categories || [];
-  const stackSkills = [
-    ...((profile.stack && profile.stack.languages) || []).map((l) => `skills/languages/${l}.md`),
-    ...((profile.stack && profile.stack.databases) || []).map((d) => `skills/databases/${d}.md`),
-  ];
-  // map a data category to the skill(s)/control topics it implies (explicit, documented table)
-  const CATEGORY_SKILLS = {
-    pan: ['skills/global/pci-dss.md', 'skills/refusal/refusal-policy.md'],
-    auth_credentials: ['skills/refusal/refusal-policy.md', 'skills/core/secure-fintech-coding.md'],
-    pii_identity: ['skills/core/secure-fintech-coding.md'],
-    kyc_records: ['skills/global/aml-kyc.md'],
-    transaction_records: ['skills/core/secure-fintech-coding.md'],
-  };
-  const wantSkills = new Set([...stackSkills]);
-  const reasons = {}; // skillPath -> why
-  for (const s of stackSkills) reasons[s] = 'declared stack';
-  for (const dc of dataCats) for (const sk of (CATEGORY_SKILLS[dc] || [])) { wantSkills.add(sk); reasons[sk] = (reasons[sk] ? reasons[sk] + ', ' : '') + `data_category:${dc}`; }
+  // AUD-20261102-F01: applicability is decided by a pure, versioned selector that separates the
+  // always-on security policy from the entity's actual legal obligations, and returns
+  // applicable / not_applicable / needs_declaration per control with a concrete reason. The
+  // entity's role is used as DECLARED and never inferred from stack or jurisdiction.
+  const { selectForProfile } = require('./profile-selector');
+  const sel = selectForProfile(profile, catalog);
 
-  const selected = [];
   const ambiguities = [];
-  for (const c of catalog.controls) {
-    const refs = c.skill_refs || [];
-    const hit = refs.find((r) => wantSkills.has(r));
-    const isRedLine = c.control_type === 'refusal_red_line';
-    if (hit || isRedLine) {
-      selected.push({ id: c.id, why: hit ? `skill ${hit} (${reasons[hit]})` : 'global red line (applies regardless of profile)', review_status: c.review_status, declared_gate: !hit && !roleDeclared ? 'applies regardless' : undefined });
-    }
-  }
-  if (!roleDeclared) ambiguities.push('entity_role.declared is not true — obligations tied to a regulated ROLE (e.g. MASAK/TCMB duties) are NOT inferred; declare the role to include them.');
+  if (!sel.role_declared) ambiguities.push('entity_role.declared is not true — role-gated obligations (e.g. MASAK/TCMB/AML duties) are NOT inferred; declare the role to include them.');
+  else if (!sel.obliged_role) ambiguities.push(`declared role '${profile.entity_role.kind}' is not an obliged entity — AML/evasion duties are its customers', not this entity's.`);
   if (profile.stack && profile.stack.detected === true) ambiguities.push('stack.detected=true — the stack was auto-detected; confirm it matches the real system before relying on language/db-specific controls.');
   for (const ov of (profile.overlays || [])) ambiguities.push(`overlay '${ov}' is declared — overlay controls are applied SEPARATELY and never silently override base controls.`);
 
-  const result = { profile: profile.profile_id, role_declared: roleDeclared, jurisdictions: profile.jurisdictions || [], selected, ambiguities };
+  const result = {
+    selector_version: sel.selector_version,
+    profile: sel.profile,
+    role_declared: sel.role_declared,
+    obliged_role: sel.obliged_role,
+    jurisdictions: sel.jurisdictions,
+    security_policy: sel.security_policy,
+    applicable: sel.applicable,
+    not_applicable: sel.not_applicable,
+    needs_declaration: sel.needs_declaration,
+    ambiguities,
+  };
   if (flags['--json']) { console.log(JSON.stringify(result, null, 2)); return 0; }
-  console.log(`explain profile: ${profile.profile_id}`);
-  console.log(`  role declared: ${roleDeclared ? `yes (${profile.entity_role.kind}/${profile.entity_role.activity})` : 'NO — obligations are not inferred'}`);
-  console.log(`  jurisdictions: ${(profile.jurisdictions || []).join(', ') || '(none declared)'}`);
-  console.log(`  selected ${selected.length} controls:`);
-  for (const s of selected) console.log(`    ${s.id} [${s.review_status}] — ${s.why}`);
+  console.log(`explain profile: ${sel.profile}  (selector v${sel.selector_version})`);
+  console.log(`  role declared: ${sel.role_declared ? `yes (${profile.entity_role.kind}/${profile.entity_role.activity})` + (sel.obliged_role ? ' — obliged entity' : ' — NOT an obliged entity') : 'NO — obligations are not inferred'}`);
+  console.log(`  jurisdictions: ${sel.jurisdictions.join(', ') || '(none declared)'}`);
+  console.log(`  ALWAYS-ON security policy (not a profile-specific legal obligation): ${sel.security_policy.map((s) => s.id).join(', ') || '(none)'}`);
+  console.log(`  APPLICABLE legal/regulatory obligations (${sel.applicable.length}):`);
+  for (const s of sel.applicable) console.log(`    ${s.id} [${s.review_status}] — ${s.reason}`);
+  console.log(`  NOT APPLICABLE (${sel.not_applicable.length}):`);
+  for (const s of sel.not_applicable) console.log(`    ${s.id} — ${s.reason}`);
+  if (sel.needs_declaration.length) {
+    console.log(`  NEEDS DECLARATION (${sel.needs_declaration.length}):`);
+    for (const s of sel.needs_declaration) console.log(`    ${s.id} — ${s.reason}`);
+  }
   if (ambiguities.length) { console.log('  AMBIGUITIES / what is NOT inferred:'); for (const a of ambiguities) console.log(`    - ${a}`); }
   return 0;
 }
@@ -781,15 +885,9 @@ function computeInstallDiff(tool, scope, target, home) {
   const skills = listSkillFiles();
   const changes = [];
   if (tool === 'codex') {
-    const treeRoot = path.join(target, CODEX_ROOT);
-    for (const s of skills) {
-      const dest = path.join(treeRoot, 'skills', s.group, s.file);
-      const state = fs.existsSync(dest) ? classify(dest, s) : 'absent';
-      if (state === 'absent') changes.push({ skill: s.name, action: 'create', state });
-      else if (state === 'current') changes.push({ skill: s.name, action: 'unchanged', state });
-      else if (state === 'ours-stale' || state === 'legacy') changes.push({ skill: s.name, action: 'update', state });
-      else if (state === 'user') changes.push({ skill: s.name, action: 'preserve (user-edited)', state });
-    }
+    // F05: manifest-aware plan (raw Markdown + .fcs-manifest.json), never the SKILL.md stamp.
+    const plan = codexPlan(target, 'install');
+    for (const e of plan.entries) changes.push({ skill: e.relKey, action: e.action === 'preserve' ? `preserve (${e.state})` : e.action, state: e.state });
   } else {
     const base = resolveBase(tool, scope, target, home);
     for (const s of skills) {
@@ -824,23 +922,24 @@ function cmdUninstall(flags, tool, scope, target, home) {
   const removed = [], preserved = [], unknownKept = [];
   if (tool === 'codex') {
     const treeRoot = path.join(target, CODEX_ROOT);
-    const manifestPath = path.join(treeRoot, CODEX_MANIFEST);
-    let manifest = null; try { manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch { /* none */ }
-    for (const s of skills) {
-      const rel = `skills/${s.group}/${s.file}`;
-      const dest = path.join(treeRoot, rel);
-      if (!fs.existsSync(dest)) continue;
-      const state = classify(dest, s);
-      if (state === 'current') { if (!dryRun) fs.rmSync(dest, { force: true }); removed.push(rel); }
-      else { preserved.push(`${rel} (${state})`); } // user-edited/legacy/unknown: keep
+    // F05: remove ONLY files whose ownership the manifest proves and that are unchanged since we
+    // wrote them; user edits, unknown files and anything under a corrupt manifest are kept.
+    const plan = codexPlan(target, 'uninstall');
+    for (const e of plan.entries) {
+      if (e.action === 'remove') { if (!dryRun) fs.rmSync(path.join(treeRoot, e.relKey), { force: true }); removed.push(e.relKey); }
+      else if (e.action === 'preserve') preserved.push(`${e.relKey} (${e.state})`);
     }
+    if (plan.manifest_status === 'corrupt') preserved.push(`${CODEX_MANIFEST} (corrupt: ownership unverifiable, nothing removed on its authority)`);
+    // The manifest itself is ours; drop it only when no managed file remains on disk.
+    const anyKept = plan.entries.some((e) => e.action === 'preserve' && (e.state === 'user_edited' || e.state === 'unverifiable'));
+    if (!dryRun && plan.manifest_status === 'v2' && !anyKept) fs.rmSync(path.join(treeRoot, CODEX_MANIFEST), { force: true });
     // our AGENTS block: remove only the managed block, keep the user's own text
     const agentsPath = path.join(target, 'AGENTS.md');
     if (fs.existsSync(agentsPath)) {
       const txt = fs.readFileSync(agentsPath, 'utf8');
       const s = txt.indexOf(BLOCK_START), e = txt.indexOf(BLOCK_END);
       if (s >= 0 && e > s) {
-        const cleaned = (txt.slice(0, s) + txt.slice(e + BLOCK_END.length)).replace(/\n{3,}/g, '\n\n').replace(/^\s+/, '');
+        const cleaned = removeCodexBlock(txt);   // F06c: only our span; user bytes unchanged
         if (!dryRun) fs.writeFileSync(agentsPath, cleaned, 'utf8');
         removed.push('AGENTS.md: managed block (user text preserved)');
       }
@@ -999,7 +1098,7 @@ if (require.main === module) {
 }
 
 module.exports = {
-  resolveBase, classify, isLegacyOutput, isLegacyCodexFile, managedContent, mergeCodexBlock, rewriteRelativeLinks,
+  resolveBase, classify, isLegacyOutput, isLegacyCodexFile, managedContent, mergeCodexBlock, removeCodexBlock, commitFlatInstall, commitTreeSwap, codexPlan, codexFileContent, rewriteRelativeLinks,
   listSkillFiles, installCodex, installSkillDir, LEGACY_FILE_HASHES,
   parseFrontmatter, frontmatter, parseSkill, MAX_DESCRIPTION,
   BLOCK_START, BLOCK_END, LEGACY_CODEX_MARKER, LEGACY_CODEX_HEADING, CODEX_ROOT, CODEX_MANIFEST,

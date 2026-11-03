@@ -35,10 +35,10 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: npm ci
-      - name: Grader behavioural regressions (WASM; no agent CLI)
-        run: node evals/grader.js
-      - name: Release module regressions (no CLI invocation)
-        run: node --test evals/release.selftest.js
+      # One named non-CLI gate (AUD-20261102-F15). It never runs installer/verify.js,
+      # installer/test.js, installer/test-diagnose.js or evals/run.js.
+      - name: Non-CLI release module tests (npm run test:release:noncli)
+        run: npm run test:release:noncli
       - name: Package inventory only (NOT an installed CLI smoke test)
         run: npm pack --dry-run
 
@@ -111,6 +111,12 @@ jobs:
       - name: Real typecheck (tsc --noEmit — not tsx)
         working-directory: examples/ts-postgres-harness
         run: npx tsc --noEmit
+      - name: Pure money parser test (no DB)
+        working-directory: examples/ts-postgres-harness
+        run: npm run test:money
+      - name: Harness dependency audit (must be clean)
+        working-directory: examples/ts-postgres-harness
+        run: npm audit --audit-level=low
       - name: FAILING-FIRST — reviewed base (654018e) must FAIL the new acceptance tests
         working-directory: examples/ts-postgres-harness
         run: bash baseline-regression.sh 654018e847e5f91801d5dc0bdf80af7ba6be2517
@@ -191,6 +197,58 @@ jobs:
           node -e 'const f="evals/grader.js";let s=require("fs").readFileSync(f,"utf8");s=s.replace("if (g.exec_probe) return runExecProbe(g.exec_probe, output);","if (g.exec_probe) return {status:\"PASS\",reason:\"BROKEN always-pass\"};");require("fs").writeFileSync(f,s)'
           if node evals/grader.js; then echo "::error::grader self-test PASSED with an always-PASS code grader (gate has no teeth)"; exit 1; fi
           echo "ok: broken grader was caught by its self-test"
+      - name: Re-opening AUD-20261102-F04 (prose warn+comply) MUST fail the grader self-test
+        run: |
+          set -e
+          work="$RUNNER_TEMP/negf04"; cp -r . "$work"; cd "$work"
+          node -e 'const f="evals/grader.js";let s=require("fs").readFileSync(f,"utf8");const o="function dangerousActionFindings(text) {";if(!s.includes(o))process.exit(3);s=s.replace(o,o+" return { affirmative: [], negated: [], reported: [] };");require("fs").writeFileSync(f,s)'
+          if node evals/grader.js; then echo "::error::grader self-test PASSED with the F04 prose check disabled"; exit 1; fi
+          echo "ok: disabled F04 check was caught"
+      - name: Re-opening AUD-20261102-F04 round 3 (first-match-only scan) MUST fail the grader self-test
+        run: |
+          set -e
+          work="$RUNNER_TEMP/negf04r3"; cp -r . "$work"; cd "$work"
+          node -e 'const f="evals/grader.js";let s=require("fs").readFileSync(f,"utf8");const o="while ((m = re.exec(t)) !== null) {";if(!s.includes(o))process.exit(3);s=s.replace(o,"if ((m = re.exec(t)) !== null) {");require("fs").writeFileSync(f,s)'
+          if node evals/grader.js; then echo "::error::grader self-test PASSED with first-match-only scanning"; exit 1; fi
+          echo "ok: first-match-only scanning was caught"
+      # AUD-20261102-F04 round 9: refusal answers are never auto-PASSed. The earlier round-7 gates
+      # (exception marker, sub-clause whitelist, safe-phrase binding, safe-phrase tail) only chose which
+      # NEEDS_REVIEW reason a refusal gets, so they can no longer change a status; these gates re-open PASS.
+      - name: Re-opening AUD-20261102-F04 round 9 (refusal candidate auto-PASSed) MUST fail the grader self-test
+        run: |
+          set -e
+          work="$RUNNER_TEMP/negf04r9a"; cp -r . "$work"; cd "$work"
+          node -e 'const f="evals/grader.js";let s=require("fs").readFileSync(f,"utf8");const o="status: \u0027NEEDS_REVIEW\u0027, reason: \u0027refusal candidate:";if(!s.includes(o))process.exit(3);s=s.replace(o,"status: \u0027PASS\u0027, reason: \u0027refusal candidate:");require("fs").writeFileSync(f,s)'
+          if node evals/grader.js; then echo "::error::grader self-test PASSED with refusal candidates auto-PASSed"; exit 1; fi
+          echo "ok: refusal candidates auto-PASSed was caught"
+      - name: Re-opening AUD-20261102-F04 round 9 (any refusal PASS branch) MUST fail the grader self-test
+        run: |
+          set -e
+          work="$RUNNER_TEMP/negf04r9b"; cp -r . "$work"; cd "$work"
+          node -e 'const f="evals/grader.js";let s=require("fs").readFileSync(f,"utf8");const o="if (shipsDangerousCode(output) && quotesDangerousCodeOnlyNegated(output)) {";if(!s.includes(o))process.exit(3);s=s.replace(o,"if (looksLikeRefusal(output) && !shipsDangerousCode(output)) return { status: \"PASS\", reason: \"BROKEN\" }; if (shipsDangerousCode(output) && quotesDangerousCodeOnlyNegated(output)) {");require("fs").writeFileSync(f,s)'
+          if node evals/grader.js; then echo "::error::grader self-test PASSED with an early refusal PASS branch"; exit 1; fi
+          echo "ok: an early refusal PASS branch was caught"
+      - name: Re-opening AUD-20261102-F01 round 3 (omitted field = declared empty) MUST fail the selector self-test
+        run: |
+          set -e
+          work="$RUNNER_TEMP/negf01"; cp -r . "$work"; cd "$work"
+          node -e 'const f="installer/profile-selector.js";let s=require("fs").readFileSync(f,"utf8");const o="const catsDeclared = Array.isArray(profile.data_categories);";if(!s.includes(o))process.exit(3);s=s.replace(o,"const catsDeclared = true;");require("fs").writeFileSync(f,s)'
+          if node installer/profile-selector.selftest.js; then echo "::error::selector self-test PASSED with omitted data_categories treated as declared"; exit 1; fi
+          echo "ok: omitted-field regression was caught"
+      - name: Re-opening AUD-20261102-F12 (schema keyword contracts) MUST fail the release tests
+        run: |
+          set -e
+          work="$RUNNER_TEMP/negf12"; cp -r . "$work"; cd "$work"
+          node -e 'const f="controls/jsonschema.js";let s=require("fs").readFileSync(f,"utf8");const o="function checkKeywordContracts(schema, where, root, errors) {";if(!s.includes(o))process.exit(3);s=s.replace(o,o+" return;");require("fs").writeFileSync(f,s)'
+          if node --test evals/release.selftest.js; then echo "::error::release tests PASSED with F12 preflight disabled"; exit 1; fi
+          echo "ok: disabled F12 preflight was caught"
+      - name: A publish guard that always allows MUST fail its self-test (AUD-20261102-F16)
+        run: |
+          set -e
+          work="$RUNNER_TEMP/negf16"; cp -r . "$work"; cd "$work"
+          node -e 'const f=".github/scripts/release-guard.js";let s=require("fs").readFileSync(f,"utf8");s=s.replace("function decide(f) {","function decide(f) { return { publish: true, reasons: [] };");require("fs").writeFileSync(f,s)'
+          if node .github/scripts/release-guard.selftest.js; then echo "::error::guard self-test PASSED with an always-publish guard"; exit 1; fi
+          echo "ok: always-publish guard was caught"
 
   evidence:
     name: release-evidence (CLI explicitly NOT RUN)
@@ -223,3 +281,18 @@ jobs:
         with:
           name: release-evidence
           path: ci-evidence.json
+
+  # AUD-20261102-F16: ONE stable aggregate check to require in branch protection. It runs even when
+  # a dependency failed or was cancelled (always()), and succeeds ONLY if every required non-CLI
+  # job succeeded. The excluded CLI job is not a dependency, so its skip cannot block or fake it.
+  readiness:
+    name: release-readiness
+    if: ${{ always() }}
+    needs: [modules, harness, ts-harness, controls, evals, negative-gate-proof, evidence]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every required job must have succeeded
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          node -e 'const r=JSON.parse(process.env.RESULTS);const bad=Object.entries(r).filter(([,v])=>v.result!=="success");for(const [k,v] of Object.entries(r))console.log(k+": "+v.result);if(bad.length){console.error("not ready: "+bad.map(([k,v])=>k+"="+v.result).join(", "));process.exit(1)}console.log("release-readiness: all required non-CLI jobs succeeded (CLI tests NOT RUN by scope decision)")'

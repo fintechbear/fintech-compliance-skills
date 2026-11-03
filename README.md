@@ -1,6 +1,6 @@
 # Fintech Compliance Skills
 
-> **Release validation scope (2026-10-28): CLI tests are NOT RUN.** By the owner's explicit decision, installer/doctor command tests, installed-artifact CLI smoke tests, and live Claude Code/Codex/Kiro sessions are excluded from this release. Module tests, schema/catalog checks, TypeScript typechecking, and real PostgreSQL harnesses remain required. A green release gate does not certify CLI compatibility or agent effectiveness. See [current closure and evidence](docs/development/RELEASE_CLOSURE.md).
+> **Release validation scope: CLI tests were not run for this release by explicit scope decision. Installer/doctor command flows and live Claude Code/Codex/Kiro sessions remain unverified.** The required gate is `npm run test:release:noncli` (pure module, schema, catalog, grader and content tests) plus TypeScript typechecking and the real PostgreSQL .NET and TypeScript harnesses, summarised by the `release-readiness` CI check. A green gate does not certify CLI compatibility, agent effectiveness, or real provider integration. Current scope and evidence: [`docs/development/RELEASE_CLOSURE.md`](docs/development/RELEASE_CLOSURE.md) (shipped in the package).
 
 **Guardrails that make AI coding assistants write regulation-aware financial
 software — and refuse to write code that would break the rules.**
@@ -120,15 +120,19 @@ Flags: `--tool claude|kiro|kiro-crew|codex`, `--scope`, `--target <dir>`, `--hom
 ### Pin to an immutable version
 
 `npx github:fintechbear/fintech-compliance-skills` tracks the default branch. For a
-reproducible install, pin to a tag (a release) instead of a moving branch:
+reproducible install, pin to a full commit SHA (or to a release tag once one has been
+published — no release tag exists yet):
 
 ```bash
-npx github:fintechbear/fintech-compliance-skills#v1.0.0 --tool claude --target .
+npx github:fintechbear/fintech-compliance-skills#<full-commit-sha> --tool claude --target .
 ```
 
-Installed skills embed **pinned source URLs** (`…/blob/v<version>/…`) for any
-`controls/…` or `examples/…` reference, so those links resolve from wherever the skill
-ends up — the repo tree is not copied into your agent's skill directory.
+When the package is built from a clean checkout, `npm prepare` records that commit in
+`installer/source.generated.json`. Installed skills then link every `controls/…` or
+`examples/…` reference to that **exact commit** (`…/blob/<full-sha>/…`), for flat and
+Codex installs alike. If the build is not pinned (no git, or uncommitted changes), the
+reference stays as text with an explicit "not pinned" note — the installer never guesses
+a version tag or points at the moving `main` branch.
 
 ### Commands (inspect, preview, remove)
 
@@ -217,11 +221,13 @@ Every skill follows the same shape, so they are easy to read and extend:
 
 ### Evidence & support status
 
-Controls are not asserted on trust. Each citation was checked against its **primary
-source**, and the engineering controls are exercised by a **runnable harness on a real
-PostgreSQL 16 database in CI** (no mocks). Support levels:
+Controls are not asserted on trust. Each control records its source kind (law,
+standard, project policy, engineering recommendation) and whether that source was
+checked against its primary text; engineering controls are exercised by a **runnable
+harness on a real PostgreSQL 16 database in CI** (no mocks). `controls/catalog.json` is
+authoritative; this table is a summary. Support levels:
 
-| Control(s) | Source (verified) | Executable evidence |
+| Control(s) | Source (review status in the catalog) | Executable evidence |
 |---|---|---|
 | FCS-PAN-001 / SAD-001 / LOG-001 / TLS-001 | PCI DSS **v4.0.1** (Req 3.5.1 / 3.3.1 / 3.4.1+8 / 4.2.1) | refusal rules; graded eval (refusal tasks) |
 | FCS-SECRET-001 | OWASP Password Storage Cheat Sheet (Argon2id 19 MiB/t=2/p=1) | refusal/eval |
@@ -231,12 +237,14 @@ PostgreSQL 16 database in CI** (no mocks). Support levels:
 | FCS-LEDGER-001 / RECON-001 | project engineering standard (double-entry) | `examples/ts-postgres-harness/ledger.ts` (BigInt-exact) |
 | FCS-OUTBOX-001 / WEBHOOK-001 / OUTCOME-001 | Stripe webhooks + error-handling docs | `examples/ts-postgres-harness/webhook.ts` |
 | FCS-REFUND-001 / REFUNDTERM-001 | project engineering standard | `examples/ts-postgres-harness/refund.ts` |
-| FCS-ERASE-001 / RETAIN-001 | GDPR Art 17(3)(b) vs EU AMLD (≥5y) / Turkey Law 5549 & KVKK | `examples/ts-postgres-harness/retention.ts` |
-| FCS-AML-001 / EVASION-001 | FATF + national AML law (jurisdiction-specific) | refusal rules; graded eval |
-| FCS-PRREVIEW-001 / SECRET-002 | project engineering standard | qualitative (review skill) |
+| FCS-ERASE-001 | engineering recommendation | `examples/ts-postgres-harness/retention.ts` |
+| FCS-RETAIN-001 | **needs review** — EU GDPR Art 17(3)(b), EU AMLD Art 40, Turkey KVKK Art 7 and UK GDPR are separate claims, each still to be confirmed against its official text | `examples/ts-postgres-harness/retention.ts` |
+| FCS-AML-001 | FATF standards + jurisdiction-specific law | refusal rules; graded eval |
+| FCS-EVASION-001 | **needs review** — FATF Recommendations (a standard, not law) verified; national statutes not yet confirmed | refusal rules; graded eval |
+| FCS-PRREVIEW-001 / SECRET-002 | project engineering standard | **documents only** — no executable test |
 
-Law controls are **verified as jurisdiction-specific** — none asserts a single
-universal statute. The provider harnesses use a clearly-labelled **test double**, not a
+No control asserts a single universal statute; legal duties depend on the entity's
+declared role and jurisdiction (`explain --profile`). The provider harnesses use a clearly-labelled **test double**, not a
 live bank/Stripe sandbox. Run the catalog check yourself: `node controls/validate-controls.js`.
 
 Each language and database file covers four things in depth:
@@ -285,24 +293,35 @@ new output format rather than regenerating historical evidence. See
   opening a GitHub issue (or a private security advisory for anything exploitable).
   A control change must come with a primary-source citation and, for an engineering
   control, a harness test that exercises it.
-- **Dependencies:** the runtime is **dependency-free** (Node built-ins only); the only
-  third-party packages are dev/test tools, pinned to exact versions
-  (`installer/package.json`, `examples/*/package-lock.json`). `npm ci` installs the
-  locked set; CI runs it clean with no `npm install` fallback. Review `npm audit` on
-  the dev tools and bump via a PR that keeps the lockfile and CI green.
-- **Evidence:** `node controls/validate-controls.js` (catalog + schema + citations),
-  `node installer/diagnose.js` (install integrity), and the CI harnesses (real
-  PostgreSQL) are the maintenance gates. The publish workflow will not release unless
-  all of them pass on the same commit.
+- **Reporting a vulnerability:** see [`SECURITY.md`](SECURITY.md).
+- **Dependencies:** one runtime dependency, `js-yaml` (skill frontmatter parsing).
+  Dev/test tools are `@iarna/toml` and `quickjs-emscripten` (root `package-lock.json`)
+  and the harness toolchains (`examples/ts-postgres-harness/package-lock.json`, the .NET
+  project). `npm ci` installs the locked set; CI has no `npm install` fallback.
+  Dependabot opens weekly update PRs; never use `npm audit fix --force`.
+- **Release gate (non-CLI):** `npm run test:release:noncli`, the harness `tsc --noEmit`,
+  and the real-PostgreSQL .NET and TypeScript harnesses, aggregated by the
+  `release-readiness` Verify check. Installer/doctor command tests (`npm test`,
+  `npm run verify`, `installer/test-diagnose.js`) are **not** part of this release gate
+  and were not run for this release.
 
 ## Publishing to npm (maintainers)
 
 The package can also be published to npm (so the command drops the `github:` prefix).
-Publishing is automated by GitHub Actions (`.github/workflows/publish.yml`): push a
-`v*` tag (matching `package.json` version) and it runs the **full Verify gate** — the
-installer matrix, the real-PostgreSQL .NET **and** TypeScript harnesses, the control
-catalog + schema self-tests, the eval self-tests and the negative-gate proof — and only
-then packs once and publishes **that same tarball**.
+Publishing is automated by GitHub Actions (`.github/workflows/publish.yml`). It first
+runs the full non-CLI **Verify gate** — module tests on Windows/Linux × Node 18–24, the
+real-PostgreSQL .NET **and** TypeScript harnesses, the control catalog + schema checks,
+the eval self-tests and the negative-gate proof — then packs **once**, keeps the tarball
+with its SHA-256 and file list, and publishes **that same tarball** only if the release
+guard agrees:
+
+- the run is a `vX.Y.Z` tag equal to `package.json` version, and the tagged commit is
+  already on `main`;
+- the version is not already on the registry;
+- the stamped source commit equals the commit being built.
+
+A manual dispatch is **pack-only** by default; publishing by dispatch needs
+`mode=publish`, the release tag ref, and the exact approved `expected_sha`.
 
 Auth (pick one, configured out-of-band on the npm account — not done in this repo):
 

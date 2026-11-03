@@ -259,10 +259,11 @@
       "skill_refs": [
         "skills/refusal/refusal-policy.md"
       ],
-      "test_refs": [
+      "test_refs": [],
+      "limitations": "Password storage form is FCS-SECRET-001; algorithm choice is FCS-CRYPTO-001. No hardcoded secrets; keys via KMS/HSM — a qualitative engineering control. Evidence is documentation/rubric only; there is no executable test for this control (AUD-20261102-F13).",
+      "document_refs": [
         "skills/core/secure-fintech-coding.md"
-      ],
-      "limitations": "Password storage form is FCS-SECRET-001; algorithm choice is FCS-CRYPTO-001. No hardcoded secrets; keys via KMS/HSM — a qualitative engineering control."
+      ]
     },
     {
       "id": "FCS-TLS-001",
@@ -295,22 +296,28 @@
       "control_type": "refusal_red_line",
       "source_refs": [
         {
-          "kind": "law",
-          "label": "AML/CFT + anti-fraud statutes (jurisdiction-specific): US OFAC/IEEPA + 31 USC 5324 anti-structuring; EU sanctions regs; Turkey Law 5549 + TCK",
+          "kind": "standard",
+          "label": "FATF Recommendations (international AML/CFT standard; not itself law)",
           "url": "https://www.fatf-gafi.org/en/topics/fatf-recommendations.html",
           "verified": true
+        },
+        {
+          "kind": "law",
+          "label": "AML/CFT + anti-fraud statutes (jurisdiction-specific): US OFAC/IEEPA + 31 USC 5324 anti-structuring; EU sanctions regs; Turkey Law 5549 + TCK",
+          "url": null,
+          "verified": false
         }
       ],
       "source_version": "FATF-aligned national AML/anti-fraud statutes",
       "effective_date": null,
       "reviewed_at": "2026-10-28",
-      "review_status": "verified",
+      "review_status": "needs_review",
       "owner_role": "compliance",
       "skill_refs": [
         "skills/refusal/refusal-policy.md"
       ],
       "test_refs": [],
-      "limitations": "Jurisdiction-specific; no single global anti-evasion law. Expressed as a jurisdiction-spanning principle (do not build tooling whose purpose is concealment/sanctions-defeat/laundering)."
+      "limitations": "Jurisdiction-specific; no single global anti-evasion law. Expressed as a jurisdiction-spanning principle (do not build tooling whose purpose is concealment/sanctions-defeat/laundering). Each jurisdiction's statute must be confirmed against its official text before this control is marked verified (AUD-20261102-F13)."
     },
     {
       "id": "FCS-AUTHZ-001",
@@ -579,15 +586,33 @@
       "source_refs": [
         {
           "kind": "law",
-          "label": "GDPR Art 17(3)(b) legal-obligation exemption to erasure vs EU AMLD >=5y AML record-keeping; Turkey KVKK (Law 6698) vs Law 5549 retention (jurisdiction-specific)",
-          "url": "https://ico.org.uk/for-organisations/uk-gdpr-guidance-and-resources/data-protection-principles/a-guide-to-the-data-protection-principles/storage-limitation/",
-          "verified": true
+          "label": "EU GDPR (Regulation (EU) 2016/679) Art 17(3)(b) - erasure exemption for compliance with a legal obligation",
+          "url": "https://eur-lex.europa.eu/eli/reg/2016/679/oj",
+          "verified": false
+        },
+        {
+          "kind": "law",
+          "label": "EU AMLD (Directive (EU) 2015/849) Art 40 - record retention, 5 years after the business relationship ends",
+          "url": "https://eur-lex.europa.eu/eli/dir/2015/849/oj",
+          "verified": false
+        },
+        {
+          "kind": "law",
+          "label": "Turkey KVKK (Law No. 6698) Art 7 - erasure/destruction when processing conditions cease",
+          "url": "https://www.mevzuat.gov.tr/mevzuatmetin/1.5.6698.pdf",
+          "verified": false
+        },
+        {
+          "kind": "law",
+          "label": "UK GDPR / ICO guidance on the right to erasure (UK scope only)",
+          "url": "https://ico.org.uk/for-organisations/uk-gdpr-guidance-and-resources/individual-rights/individual-rights/right-to-erasure/",
+          "verified": false
         }
       ],
       "source_version": "GDPR Art 17(3)(b); EU AMLD (>=5y); Turkey Law 5549/KVKK",
       "effective_date": null,
       "reviewed_at": "2026-10-28",
-      "review_status": "verified",
+      "review_status": "needs_review",
       "owner_role": "compliance",
       "skill_refs": [
         "skills/core/fintech-retention-erasure.md"
@@ -595,7 +620,7 @@
       "test_refs": [
         "examples/ts-postgres-harness/retention.ts"
       ],
-      "limitations": "Retention is per data category by legal basis, jurisdiction-specific. AML minimum is \"at least 5 years\" under EU AMLD; some jurisdictions (and Turkey for certain records) require longer. Erasure is not absolute where a legal obligation requires retention (GDPR Art 17(3)(b))."
+      "limitations": "Retention is per data category by legal basis, jurisdiction-specific. AML minimum is \"at least 5 years\" under EU AMLD; some jurisdictions (and Turkey for certain records) require longer. Erasure is not absolute where a legal obligation requires retention (GDPR Art 17(3)(b)). EU, TR and UK sources are separate claims; each must be confirmed against its official text (AUD-20261102-F13)."
     },
     {
       "id": "FCS-ERASE-001",
@@ -644,10 +669,11 @@
       "skill_refs": [
         "skills/core/fintech-pr-review.md"
       ],
-      "test_refs": [
+      "test_refs": [],
+      "limitations": "This is a review discipline, not a scanner: it structures findings and marks uncertainty; it does not certify compliance. Per-finding evidence-bearing review format; qualitative, judged by the review skill rather than an executable test. Evidence is documentation/rubric only; there is no executable test for this control (AUD-20261102-F13).",
+      "document_refs": [
         "skills/core/fintech-pr-review.md"
-      ],
-      "limitations": "This is a review discipline, not a scanner: it structures findings and marks uncertainty; it does not certify compliance. Per-finding evidence-bearing review format; qualitative, judged by the review skill rather than an executable test."
+      ]
     }
   ]
 }
