@@ -30,7 +30,7 @@ jobs:
         os: [ubuntu-latest, windows-latest]
         node: ['18', '20', '22', '24']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
@@ -60,7 +60,7 @@ jobs:
           --health-cmd "pg_isready -U fcs -d fcs"
           --health-interval 5s --health-timeout 5s --health-retries 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '10.0.x'
@@ -99,7 +99,7 @@ jobs:
     env:
       PGCONN: "postgresql://fcs:fcs@127.0.0.1:55443/fcs"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0   # need history so the baseline-regression can read 654018e
       - uses: actions/setup-node@v4
@@ -130,7 +130,7 @@ jobs:
     name: control-catalog
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -150,7 +150,7 @@ jobs:
     name: eval-harness-selftests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -170,7 +170,7 @@ jobs:
     name: negative-gate-proof
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
@@ -255,7 +255,7 @@ jobs:
     needs: [modules, harness, ts-harness, controls, evals, negative-gate-proof]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
