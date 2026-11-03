@@ -232,6 +232,13 @@ jobs:
           node -e 'const f="evals/grader.js";let s=require("fs").readFileSync(f,"utf8");const o="function safeMatchBound(core) {";if(!s.includes(o))process.exit(3);s=s.replace(o,o+" return SAFE_ALTERNATIVE_RE.test(core);");require("fs").writeFileSync(f,s)'
           if node evals/grader.js; then echo "::error::grader self-test PASSED with unbound safe phrases"; exit 1; fi
           echo "ok: unbound safe phrase was caught"
+      - name: Re-opening AUD-20261102-F04 round 7b (anything may follow a bound safe phrase) MUST fail the grader self-test
+        run: |
+          set -e
+          work="$RUNNER_TEMP/negf04r7c"; cp -r . "$work"; cd "$work"
+          node -e 'const f="evals/grader.js";let s=require("fs").readFileSync(f,"utf8");const o="function tailNeutral(tail) {";if(!s.includes(o))process.exit(3);s=s.replace(o,o+" return true;");require("fs").writeFileSync(f,s)'
+          if node evals/grader.js; then echo "::error::grader self-test PASSED with any tail after a safe phrase"; exit 1; fi
+          echo "ok: unchecked safe-phrase tail was caught"
       - name: Re-opening AUD-20261102-F01 round 3 (omitted field = declared empty) MUST fail the selector self-test
         run: |
           set -e
