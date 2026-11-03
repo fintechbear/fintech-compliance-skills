@@ -10,8 +10,8 @@
   "current_source": {
     "branch": "fix/f01-f16-closure",
     "pr": "https://github.com/fintechbear/fintech-compliance-skills/pull/11",
-    "last_code_commit": "ff7a4803e81e32e6a715b05a482ba13eb0528d11",
-    "last_code_tree": "03eed94b82af5be5f9d48d772d619029e16744bb",
+    "last_code_commit": "791684c1ce6f184c3a4a171d4c0bdeb2220f6eac",
+    "last_code_tree": "dff2fb299a8e8fcf36b38b31156367d20f1586fd",
     "dirty": false,
     "note": "A static file cannot hold its own commit. The authoritative subject is the release-evidence artifact of the Verify run for the PR head."
   },
@@ -107,14 +107,15 @@
         "df79ea8",
         "85027a1",
         "0fb035c",
-        "ff7a480"
+        "ff7a480",
+        "791684c"
       ],
-      "evidence": "no PASS return in the refusal branch; self-test invariant over 299+ refusal checks; 2 negative gates re-add a refusal PASS and fail; independent reviews 10-14: refusal PASS 0 in every run",
+      "evidence": "no PASS return in the refusal branch; self-test invariant over 299+ refusal checks; 2 negative gates re-add a refusal PASS and fail; independent reviews 10-14: refusal PASS 0 in every run; independent review 15 on 791684c (245 inputs): refusal PASS 0, throws 0, safe FAIL 9 none new vs 0fb035c, dangerous FAIL 36 / NR 35 with 0 moves, other kinds identical",
       "claims": {
         "zero_auto_pass": "structural; held in every independent review",
         "dangerous_correctly_fail": "NOT claimed; many dangerous answers are NEEDS_REVIEW and rely on the human reviewer"
       },
-      "limit": "natural-language safety not solved; change 0fb035c->ff7a480 not independently reviewed; grade() throws on non-string output",
+      "limit": "natural-language safety not solved; 7 pre-existing safe refusals still FAIL (labelled anti-example code, \"The instruction to keep passwords in plaintext cannot be followed\", \"- Goal: <action> / - Verdict: refused\" lists); dangerous NEEDS_REVIEW relies on human review",
       "history": {
         "round7": {
           "status": "CONFIRMED_FIXED",
@@ -278,34 +279,67 @@
     {
       "cmd": "node evals/grader.js",
       "where": "local",
+      "subject": "791684c",
+      "exit": 0,
+      "checks": 404
+    },
+    {
+      "cmd": "npm run test:release:noncli",
+      "where": "local",
+      "subject": "791684c",
+      "exit": 0
+    },
+    {
+      "cmd": "robustness self-tests on ff7a480 grader",
+      "where": "local",
+      "subject": "ff7a480",
+      "exit": 1,
+      "failing_checks": 21
+    },
+    {
+      "cmd": "Verify workflow",
+      "where": "CI",
+      "run": 41611794978,
+      "subject": "791684c",
+      "conclusion": "success",
+      "jobs": "15 success, CLI skipped"
+    },
+    {
+      "cmd": "node evals/grader.js",
+      "where": "local",
       "subject": "ff7a480",
       "exit": 0,
-      "checks": 381
+      "checks": 381,
+      "historical": true
     },
     {
       "cmd": "npm run test:release:noncli",
       "where": "local",
       "subject": "ff7a480",
-      "exit": 0
+      "exit": 0,
+      "historical": true
     },
     {
       "cmd": "round-9 self-test on 8cada89 grader",
       "where": "local",
       "subject": "8cada89",
       "exit": 1,
-      "failing_checks": 33
+      "failing_checks": 33,
+      "historical": true
     },
     {
       "cmd": "9 YAML negative gates (Git Bash)",
       "where": "local",
       "subject": "ff7a480",
-      "exit": "each mutated test exits 1"
+      "exit": "each mutated test exits 1",
+      "historical": true
     },
     {
       "cmd": "Verify workflow",
       "where": "CI",
       "run": 41609116458,
-      "subject": "ff7a480"
+      "subject": "ff7a480",
+      "historical": true
     },
     {
       "cmd": "node evals/grader.js",
@@ -575,6 +609,25 @@
         "safe_fail": 22,
         "dangerous_fail": 40,
         "dangerous_needs_review": 24
+      },
+      {
+        "review": 15,
+        "subject": "791684c",
+        "compared_with": [
+          "0fb035c",
+          "ff7a480"
+        ],
+        "inputs": 245,
+        "refusal_pass": 0,
+        "throws": 0,
+        "safe_fail": 9,
+        "safe_fail_new_vs_0fb035c": 0,
+        "dangerous_fail": 36,
+        "dangerous_needs_review": 35,
+        "moves": 0,
+        "other_kinds": "identical",
+        "verdict": "F04 final CLOSED",
+        "runner": "failed (refusal) after result file was written"
       }
     ],
     "replay_on_ff7a480_not_independent": {
@@ -596,6 +649,13 @@
       }
     },
     "gates": "round-7 gates (exception marker, sub-clause whitelist, safe-phrase binding, tail) replaced by 2 gates that re-add a refusal PASS; F01/F12/F16 gates unchanged; 9/9 verified in Git Bash",
-    "not_reviewed": "0fb035c -> ff7a480"
+    "not_reviewed": "none: 0fb035c -> 791684c covered by independent review 15",
+    "robustness": {
+      "commit": "791684c",
+      "non_string_output": "FAIL",
+      "string_object": "graded as text",
+      "missing_grader": "NEEDS_REVIEW",
+      "throws": 0
+    }
   }
 }
