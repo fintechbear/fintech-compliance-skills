@@ -13,6 +13,7 @@ export type Outcome =
   | 'posted' | 'replayed' | 'conflict'
   | 'bad_amount' | 'unsupported_currency' | 'over_precision' | 'overflow'
   | 'currency_mismatch' | 'not_found_in_tenant' | 'insufficient_funds'
+  | 'same_account' | 'consistency_error' | 'forbidden'
   | 'retry_exhausted';
 
 export interface TransferReq {
@@ -31,11 +32,18 @@ export async function initSchema(pool: Pool): Promise<void> {
   const c = await pool.connect();
   try {
     await c.query('BEGIN');
-    await c.query('DROP TABLE IF EXISTS audit, idempotency, accounts CASCADE');
+    await c.query('DROP TABLE IF EXISTS audit, idempotency, account_grants, accounts CASCADE');
     await c.query(`CREATE TABLE accounts(
       id text NOT NULL, tenant_id text NOT NULL, currency text NOT NULL,
       balance_minor bigint NOT NULL, version int NOT NULL DEFAULT 0,
       PRIMARY KEY (tenant_id, id))`);
+    // FCS-AUTHZ-001 object-level authorization: a principal (actor) holds explicit grants on an
+    // account. Tenant membership is NOT authorization — the actor must hold a can_debit grant on
+    // the SOURCE account. Mirrors the .NET harness's account_grants contract.
+    await c.query(`CREATE TABLE account_grants(
+      tenant_id text NOT NULL, account_id text NOT NULL, principal_id text NOT NULL,
+      can_debit boolean NOT NULL DEFAULT false,
+      PRIMARY KEY (tenant_id, account_id, principal_id))`);
     await c.query(`CREATE TABLE idempotency(
       tenant_id text NOT NULL, operation text NOT NULL, key text NOT NULL,
       payload_fingerprint text NOT NULL, transfer_id text NOT NULL,
@@ -54,13 +62,21 @@ export async function seedAccount(pool: Pool, tenant: string, id: string, curren
     [id, tenant, currency, balanceMinor]);
 }
 
+// FCS-AUTHZ-001: grant a principal a (debit) capability on an account within a tenant.
+export async function seedGrant(pool: Pool, tenant: string, accountId: string, principal: string, canDebit = true) {
+  await pool.query(
+    `INSERT INTO account_grants(tenant_id,account_id,principal_id,can_debit) VALUES($1,$2,$3,$4)
+     ON CONFLICT (tenant_id,account_id,principal_id) DO UPDATE SET can_debit=EXCLUDED.can_debit`,
+    [tenant, accountId, principal, canDebit]);
+}
+
 // Canonical idempotency fingerprint (FCS-IDEMP-001): stable JSON of the scoped request.
 function fingerprint(req: TransferReq): string {
   return JSON.stringify([req.src, req.dst, req.amount, req.currency]);
 }
 
 export async function transfer(
-  pool: Pool, tenant: string, operation: string, key: string, req: TransferReq,
+  pool: Pool, tenant: string, actor: string, operation: string, key: string, req: TransferReq,
 ): Promise<TransferResult> {
   // FCS-MONEY-001: validate amount up front; map MoneyError kind -> outcome.
   let amountMinor: number;
@@ -75,6 +91,15 @@ export async function transfer(
     }
     throw e;
   }
+
+  // R01: self-transfer contract. A transfer whose source and destination are the same
+  // account is a no-op at best and, on an optimistic-version ledger, actively WRONG: the
+  // debit bumps the row's version so the credit's WHERE version=old matches 0 rows, leaving
+  // the balance debited and the credit lost. There is no correct "move money to yourself",
+  // so we REFUSE it explicitly rather than post a half-write. Checked before idempotency so
+  // a self-transfer never records an idempotency row or audit entry.
+  if (req.src === req.dst) return { outcome: 'same_account' };
+
   const fp = fingerprint(req);
 
   const MAX_RETRY = 8;
@@ -83,7 +108,21 @@ export async function transfer(
     try {
       await c.query('BEGIN ISOLATION LEVEL SERIALIZABLE');
 
-      // FCS-IDEMP-001: look up (tenant, operation, key) first.
+      // R02: OBJECT-LEVEL AUTHORIZATION comes BEFORE any idempotency replay can return a
+      // result. Otherwise an unauthorized actor could present someone else's idempotency key
+      // and learn the stored transfer_id/outcome (a result leak). Tenant membership is NOT
+      // authorization: the actor must hold a can_debit grant on the SOURCE account, scoped to
+      // this tenant. A missing source account in this tenant is 'not_found_in_tenant'; an
+      // existing one the actor may not debit is 'forbidden'.
+      const srcAcc = await c.query(
+        'SELECT 1 FROM accounts WHERE tenant_id=$1 AND id=$2', [tenant, req.src]);
+      if (!srcAcc.rowCount) { await c.query('ROLLBACK'); return { outcome: 'not_found_in_tenant' }; }
+      const grant = await c.query(
+        'SELECT 1 FROM account_grants WHERE tenant_id=$1 AND account_id=$2 AND principal_id=$3 AND can_debit=true',
+        [tenant, req.src, actor]);
+      if (!grant.rowCount) { await c.query('ROLLBACK'); return { outcome: 'forbidden' }; }
+
+      // FCS-IDEMP-001: look up (tenant, operation, key) only AFTER authorization.
       const seen = await c.query(
         'SELECT payload_fingerprint, transfer_id FROM idempotency WHERE tenant_id=$1 AND operation=$2 AND key=$3',
         [tenant, operation, key]);
@@ -93,7 +132,7 @@ export async function transfer(
         return { outcome: 'replayed', transferId: seen.rows[0].transfer_id };
       }
 
-      // FCS-AUTHZ-001: both accounts must exist WITHIN this tenant.
+      // Both accounts must exist WITHIN this tenant (destination re-checked here under lock).
       const accs = await c.query(
         'SELECT id, currency, balance_minor, version FROM accounts WHERE tenant_id=$1 AND id = ANY($2) FOR UPDATE',
         [tenant, [req.src, req.dst]]);
@@ -106,11 +145,16 @@ export async function transfer(
       if (Number(src.balance_minor) < amountMinor) { await c.query('ROLLBACK'); return { outcome: 'insufficient_funds' }; }
 
       const transferId = `${tenant}:${operation}:${key}`;
-      // Debit + credit with optimistic version bump.
-      await c.query('UPDATE accounts SET balance_minor=balance_minor-$1, version=version+1 WHERE tenant_id=$2 AND id=$3 AND version=$4',
+      // Debit + credit with optimistic version bump. R01: assert each UPDATE changed EXACTLY
+      // the one row we expect. A rowCount other than 1 means the optimistic version no longer
+      // matched (a concurrent writer, or a logic error like a self-transfer slipping through):
+      // we must NOT proceed to COMMIT on a partial write — roll the whole transaction back.
+      const deb = await c.query('UPDATE accounts SET balance_minor=balance_minor-$1, version=version+1 WHERE tenant_id=$2 AND id=$3 AND version=$4',
         [amountMinor, tenant, req.src, src.version]);
-      await c.query('UPDATE accounts SET balance_minor=balance_minor+$1, version=version+1 WHERE tenant_id=$2 AND id=$3 AND version=$4',
+      if (deb.rowCount !== 1) { await c.query('ROLLBACK'); return { outcome: 'consistency_error' }; }
+      const cre = await c.query('UPDATE accounts SET balance_minor=balance_minor+$1, version=version+1 WHERE tenant_id=$2 AND id=$3 AND version=$4',
         [amountMinor, tenant, req.dst, dst.version]);
+      if (cre.rowCount !== 1) { await c.query('ROLLBACK'); return { outcome: 'consistency_error' }; }
       await c.query('INSERT INTO audit(tenant_id,transfer_id,src,dst,amount_minor,currency) VALUES($1,$2,$3,$4,$5,$6)',
         [tenant, transferId, req.src, req.dst, amountMinor, req.currency]);
       // idempotency row in the SAME transaction — unique PK is the real dedup guarantee.

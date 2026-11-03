@@ -80,21 +80,24 @@ public sealed class Bank(string connString)
             await using var tx = await conn.BeginTransactionAsync(System.Data.IsolationLevel.Serializable, ct);
             try
             {
-                // idempotency pre-check within the tx
+                // load accounts scoped to tenant (object-level + tenant isolation)
+                var from = await ReadAccount(conn, tx, tenantId, req.FromAccountId, ct);
+                var to = await ReadAccount(conn, tx, tenantId, req.ToAccountId, ct);
+                if (from is null || to is null) { await tx.RollbackAsync(ct); return new(Outcome.NotFound); }
+
+                // R02: object-level authorization BEFORE any idempotency replay. The actor must
+                // hold a debit grant on the SOURCE account. Checking this before the replay lookup
+                // means an unauthorized actor presenting another actor's key cannot read back the
+                // stored transfer_id/outcome (a result leak). Tenant membership is not authorization.
+                if (!await HasDebitGrant(conn, tx, from.Value.id, actorId, ct)) { await tx.RollbackAsync(ct); return new(Outcome.Forbid); }
+
+                // idempotency pre-check within the tx (only AFTER authorization)
                 var prior = await ReadIdem(conn, tx, tenantId, idemKey, ct);
                 if (prior is not null)
                 {
                     await tx.RollbackAsync(ct);
                     return prior.Value.fp != fingerprint ? new(Outcome.Conflict) : new(Outcome.Replayed, prior.Value.transferId);
                 }
-
-                // load accounts scoped to tenant (object-level + tenant isolation)
-                var from = await ReadAccount(conn, tx, tenantId, req.FromAccountId, ct);
-                var to = await ReadAccount(conn, tx, tenantId, req.ToAccountId, ct);
-                if (from is null || to is null) { await tx.RollbackAsync(ct); return new(Outcome.NotFound); }
-
-                // object-level authorization: actor must hold a debit grant on the SOURCE account
-                if (!await HasDebitGrant(conn, tx, from.Value.id, actorId, ct)) { await tx.RollbackAsync(ct); return new(Outcome.Forbid); }
 
                 if (from.Value.currency != req.Currency || to.Value.currency != req.Currency) { await tx.RollbackAsync(ct); return new(Outcome.CurrencyMismatch); }
                 if (from.Value.balance < minor) { await tx.RollbackAsync(ct); return new(Outcome.InsufficientFunds); }

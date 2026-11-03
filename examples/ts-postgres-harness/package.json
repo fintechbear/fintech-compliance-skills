@@ -10,7 +10,8 @@
     "webhook": "tsx webhook.ts",
     "ledger": "tsx ledger.ts",
     "refund": "tsx refund.ts",
-    "retention": "tsx retention.ts"
+    "retention": "tsx retention.ts",
+    "test:money": "node --import tsx --test money.selftest.ts"
   },
   "engines": {
     "node": ">=20"
@@ -19,7 +20,7 @@
     "pg": "8.13.1"
   },
   "devDependencies": {
-    "tsx": "4.19.2",
+    "tsx": "4.20.0",
     "typescript": "5.7.2",
     "@types/node": "22.10.2",
     "@types/pg": "8.11.10"

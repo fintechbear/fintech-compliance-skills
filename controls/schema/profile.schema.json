@@ -46,7 +46,12 @@
     "payment_providers": {
       "type": "array",
       "items": { "type": "string" },
-      "description": "Declared payment/provider integrations (e.g. 'stripe'). Provider-specific terms (void vs refund vs reversal) are resolved against that provider, not universalized."
+      "description": "Declared payment/provider integrations (e.g. 'stripe'). Provider-specific terms (void vs refund vs reversal) are resolved against that provider, not universalized. Omitting the field means NOT declared (controls stay needs_declaration); an explicit [] means declared none."
+    },
+    "operations": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["internal_transfer", "provider_payment", "refund", "payout", "reporting_only"] },
+      "description": "Declared operations the system performs. Money-moving operations (internal_transfer, provider_payment, refund, payout) make idempotency applicable even with no payment provider. Omitting the field means NOT declared; free-text activity is never parsed for this."
     },
     "stack": {
       "type": "object",

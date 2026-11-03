@@ -9,12 +9,27 @@
   "scripts": {
     "verify": "node installer/verify.js",
     "test": "node --test installer/test.js",
-    "diagnose": "node installer/diagnose.js"
+    "diagnose": "node installer/diagnose.js",
+    "stamp-source": "node installer/stamp-source.js",
+    "prepare": "node installer/stamp-source.js",
+    "test:release:noncli": "node evals/grader.js && node --test evals/release.selftest.js && node evals/validate-tasks.js && node evals/adapters/isolation.selftest.js && node controls/validate-controls.js && node controls/validate-controls.selftest.js && node controls/migrate-refusal-citations.js --check && node controls/evidence.selftest.js && node installer/profile-selector.selftest.js && node installer/skill-inventory.selftest.js && node installer/agents-block.selftest.js && node installer/install-txn.selftest.js && node installer/codex-ownership.selftest.js && node installer/resource-refs.selftest.js && node installer/content-consistency.selftest.js && node .github/scripts/release-guard.selftest.js"
   },
   "files": [
     "installer/index.js",
     "installer/diagnose.js",
+    "installer/profile-selector.js",
+    "installer/codex-ownership.js",
+    "installer/source.js",
+    "installer/source.json",
+    "installer/source.generated.json",
     "skills/",
+    "controls/catalog.json",
+    "controls/evidence.js",
+    "controls/schema/",
+    "controls/profiles/",
+    "docs/development/RELEASE_CLOSURE.md",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
     "README.md",
     "LICENSE"
   ],
@@ -39,6 +54,10 @@
   },
   "license": "Apache-2.0",
   "devDependencies": {
+    "@iarna/toml": "^2.2.5",
+    "quickjs-emscripten": "^0.31.0"
+  },
+  "dependencies": {
     "js-yaml": "^4.3.2"
   }
 }

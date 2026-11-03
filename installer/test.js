@@ -476,6 +476,156 @@ test('16. packed npm artifact installs + re-installs correctly', () => {
   assert.match(out2, /0 new, 0 migrated/, 're-install from tarball is idempotent');
   fs.rmSync(t, { recursive: true, force: true });
 });
+// ---------------------------------------------------------------------------
+// R08: single frontmatter + real author metadata (no derived/duplicated block)
+// ---------------------------------------------------------------------------
+// A skill whose SOURCE carries YAML frontmatter must install with EXACTLY ONE
+// frontmatter block, using the author's own name/description/triggers — not a
+// derived description prepended while the author's block lingers in the body.
+function frontmatterSkillName() {
+  // Pick a source skill that actually starts with a `---` fence.
+  for (const s of api.listSkillFiles()) {
+    const txt = fs.readFileSync(s.abs, 'utf8');
+    if (/^\uFEFF?---[ \t]*\r?\n/.test(txt)) return s.name;
+  }
+  return null;
+}
+
+test('R08. author-frontmatter skill installs with a SINGLE block + author metadata (no duplicate, no derived override)', () => {
+  const name = frontmatterSkillName();
+  assert.ok(name, 'repo has at least one source skill with YAML frontmatter');
+  const src = api.listSkillFiles().find((s) => s.name === name);
+  const srcText = fs.readFileSync(src.abs, 'utf8');
+  // author's declared metadata from the SOURCE
+  const srcFm = srcText.slice(srcText.indexOf('---') + 3, srcText.indexOf('\n---', 3));
+  const srcMeta = yaml.load(srcFm);
+
+  const t = tmp();
+  run(['--tool', 'claude', '--target', t, '--home', t]);
+  const installed = fs.readFileSync(path.join(t, '.claude', 'skills', name, 'SKILL.md'), 'utf8');
+
+  // exactly ONE frontmatter fence pair (a `---` line at col 0, twice — open+close)
+  const fences = (installed.match(/^---[ \t]*$/gm) || []).length;
+  assert.equal(fences, 2, 'exactly one frontmatter block (open+close), not a duplicated/lingering one');
+
+  // body (everything after the first closing fence) must NOT contain a second
+  // frontmatter `name:`/`description:` key line left over from the source.
+  const afterFm = installed.slice(installed.indexOf('\n---', 3) + 4);
+  assert.ok(!/^\s*name:\s*["']?fintech/m.test(afterFm), 'no leftover author frontmatter in body');
+  assert.ok(!/^\s*description:\s*["']/m.test(afterFm), 'no leftover description key in body');
+
+  // installed description/name/triggers equal the AUTHOR's, not a derived first-bold run
+  const meta = yaml.load(installed.slice(3, installed.indexOf('\n---', 3)));
+  assert.equal(meta.name, srcMeta.name, 'author name preserved');
+  assert.equal(meta.description, srcMeta.description, 'author description preserved verbatim (not re-derived)');
+  if (srcMeta.triggers) assert.equal(meta.triggers, srcMeta.triggers, 'author triggers preserved');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('R08b. a metadata-less (old-style) skill still installs with ONE derived frontmatter (explicit fallback)', () => {
+  // secure-fintech-coding has NO source frontmatter: it starts with `# Skill:`.
+  const name = 'secure-fintech-coding';
+  const src = api.listSkillFiles().find((s) => s.name === name);
+  assert.ok(src, 'fallback skill exists');
+  const srcText = fs.readFileSync(src.abs, 'utf8');
+  assert.ok(!/^\uFEFF?---[ \t]*\r?\n/.test(srcText), 'source has NO frontmatter (the fallback case)');
+
+  const t = tmp();
+  run(['--tool', 'claude', '--target', t, '--home', t]);
+  const installed = fs.readFileSync(path.join(t, '.claude', 'skills', name, 'SKILL.md'), 'utf8');
+  const fences = (installed.match(/^---[ \t]*$/gm) || []).length;
+  assert.equal(fences, 2, 'exactly one derived frontmatter block for a metadata-less source');
+  const meta = yaml.load(installed.slice(3, installed.indexOf('\n---', 3)));
+  assert.equal(meta.name, name, 'name derives from the skill dir name');
+  assert.ok(meta.description && meta.description.length > 0, 'a description is derived from the first bold run');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('R08c. client-specific (non-standard) source frontmatter keys are carried through, not dropped', () => {
+  // Build a throwaway source skill with an extra key and verify managedContent keeps it.
+  const extraKey = 'x-client-meta';
+  const t = tmp();
+  const grp = path.join(t, 'extra');
+  fs.mkdirSync(grp, { recursive: true });
+  const f = path.join(grp, 'demo-skill.md');
+  fs.writeFileSync(f, `---\nname: "demo-skill"\ndescription: "Author desc."\ntriggers: "demo"\n${extraKey}: "keep-me-42"\n---\n\n# Skill: Demo\n\n**Body.**\n`, 'utf8');
+  const skill = { group: 'extra', file: 'demo-skill.md', name: 'demo-skill', abs: f };
+  const mc = api.managedContent(skill);
+  const fences = (mc.match(/^---[ \t]*$/gm) || []).length;
+  assert.equal(fences, 2, 'single frontmatter block');
+  const meta = yaml.load(mc.slice(3, mc.indexOf('\n---', 3)));
+  assert.equal(meta.name, 'demo-skill');
+  assert.equal(meta.description, 'Author desc.', 'author description kept');
+  assert.equal(meta[extraKey], 'keep-me-42', 'client-specific key carried through verbatim');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('R08d. a 400-char valid description is PRESERVED verbatim (no silent truncation)', () => {
+  const t = tmp();
+  const grp = path.join(t, 'extra');
+  fs.mkdirSync(grp, { recursive: true });
+  const desc = 'D'.repeat(400);
+  const f = path.join(grp, 'demo-skill.md');
+  fs.writeFileSync(f, `---\nname: "demo-skill"\ndescription: "${desc}"\ntriggers: "demo"\n---\n\n# Skill: Demo\n\n**Body.**\n`, 'utf8');
+  const mc = api.managedContent({ group: 'extra', file: 'demo-skill.md', name: 'demo-skill', abs: f });
+  const meta = yaml.load(mc.slice(3, mc.indexOf('\n---', 3)));
+  assert.equal(meta.description, desc, '400-char description preserved in full, not cut to ~300');
+  assert.ok(!meta.description.includes('…'), 'no ellipsis truncation');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('R08e. a description over the limit throws an EXPLICIT error (no silent truncation)', () => {
+  assert.throws(
+    () => api.frontmatter('demo', 'Z'.repeat(api.MAX_DESCRIPTION + 1), 'trig', {}),
+    /over the \d+-char limit/,
+    'over-limit description is an explicit error, not a quiet cut');
+  // at the limit it is accepted
+  assert.doesNotThrow(() => api.frontmatter('demo', 'Z'.repeat(api.MAX_DESCRIPTION), 'trig', {}));
+});
+
+test('R08f. nested metadata (metadata.version) and a sequence round-trip through install', () => {
+  const t = tmp();
+  const grp = path.join(t, 'extra');
+  fs.mkdirSync(grp, { recursive: true });
+  const f = path.join(grp, 'demo-skill.md');
+  fs.writeFileSync(f, `---\nname: "demo-skill"\ndescription: "Author desc."\ntriggers: "demo"\nmetadata:\n  version: 7\n  owner: "team-a"\ntags:\n  - alpha\n  - beta\n---\n\n# Skill: Demo\n\n**Body.**\n`, 'utf8');
+  const mc = api.managedContent({ group: 'extra', file: 'demo-skill.md', name: 'demo-skill', abs: f });
+  const meta = yaml.load(mc.slice(3, mc.indexOf('\n---', 3)));
+  assert.ok(meta.metadata && meta.metadata.version === 7, 'nested metadata.version round-trips (was dropped -> metadata:"")');
+  assert.equal(meta.metadata.owner, 'team-a', 'nested metadata.owner round-trips');
+  assert.deepEqual(meta.tags, ['alpha', 'beta'], 'a YAML sequence round-trips');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('R08g. a quoted scalar with special chars + a BOM/CRLF source parse correctly', () => {
+  const t = tmp();
+  const grp = path.join(t, 'extra');
+  fs.mkdirSync(grp, { recursive: true });
+  const f = path.join(grp, 'demo-skill.md');
+  // leading UTF-8 BOM + CRLF line endings + a description containing a colon and quotes
+  const src = '\uFEFF---\r\nname: "demo-skill"\r\ndescription: "Handle A: store B, never C."\r\ntriggers: "demo"\r\n---\r\n\r\n# Skill: Demo\r\n\r\n**Body.**\r\n';
+  fs.writeFileSync(f, src, 'utf8');
+  const mc = api.managedContent({ group: 'extra', file: 'demo-skill.md', name: 'demo-skill', abs: f });
+  const meta = yaml.load(mc.slice(3, mc.indexOf('\n---', 3)));
+  assert.equal(meta.description, 'Handle A: store B, never C.', 'BOM + CRLF + special chars parse correctly');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('R08h. every real source skill filename matches a stable name<->folder mapping', () => {
+  // The installed layout is <name>/SKILL.md; the emitted `name` must equal the source basename
+  // (or the author-set name) so a skill cannot be installed under a folder that disagrees with
+  // its declared name. We assert the invariant across the REAL skill set.
+  for (const s of api.listSkillFiles()) {
+    const parsed = api.parseSkill(s.abs);
+    const emittedName = parsed.name || s.name;
+    // the install folder is the skill's `name`; it must be a safe slug and match the source file
+    assert.ok(/^[a-z0-9-]+$/i.test(s.name), `${s.name}: source basename is a safe folder slug`);
+    if (parsed.name) {
+      assert.ok(/^[a-z0-9-]+$/i.test(emittedName), `${s.name}: author name '${emittedName}' is a safe folder slug`);
+    }
+  }
+});
+
 
 // ---------------------------------------------------------------------------
 // G1-G4: second-round regressions (deeper Codex migration + atomic AGENTS.md write)
@@ -640,4 +790,132 @@ test('G4: partial/failed AGENTS.md write never corrupts the active file (all sta
     assert.equal(fs.readFileSync(path.join(t, backups[0], 'skills', 'core', 'secure-fintech-coding.md'), 'utf8'), v1Tree, 'E: backup still holds the previous good tree');
     fs.rmSync(t, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// E: CLI subcommands — list / explain / dry-run / diff / uninstall
+// ---------------------------------------------------------------------------
+// exit-code-aware runner (run() throws on non-zero; these need the code+output)
+function runCli(args, opts = {}) {
+  try { return { code: 0, out: execFileSync(process.execPath, [INSTALLER, ...args], { stdio: 'pipe', ...opts }).toString() }; }
+  catch (e) { return { code: e.status ?? 1, out: (e.stdout || '').toString() + (e.stderr || '').toString() }; }
+}
+
+test('E-list: JSON lists every skill with its controls + evidence status', () => {
+  const r = runCli(['list', '--json']);
+  assert.equal(r.code, 0, 'list exits 0');
+  const j = JSON.parse(r.out);
+  assert.equal(j.skills.length, sourceSkillNames.length, 'lists every source skill');
+  for (const s of j.skills) {
+    assert.ok(typeof s.description === 'string' && s.description.length > 0, `${s.name} has a description`);
+    assert.ok(Array.isArray(s.controls), `${s.name} reports its controls`);
+    assert.ok(Number.isInteger(s.needs_review_controls), `${s.name} reports needs-review count`);
+  }
+});
+
+test('E-explain: a declared-role profile selects controls with REASONS; obligations not inferred', () => {
+  const r = runCli(['explain', '--profile', 'tr-psp-postgres', '--json']);
+  assert.equal(r.code, 0, 'explain exits 0');
+  const j = JSON.parse(r.out);
+  assert.equal(j.role_declared, true, 'role is declared in this profile');
+  assert.ok(j.selected.length > 0, 'some controls selected');
+  for (const s of j.selected) assert.ok(s.why && s.why.length, `${s.id} has an explicit reason`);
+  // the red-line PAN control is selected because the profile declares pan data
+  assert.ok(j.selected.some((s) => s.id === 'FCS-PAN-001'), 'PAN control selected for a pan-handling profile');
+});
+
+test('E-explain: a profile with role NOT declared surfaces the ambiguity (no inference)', () => {
+  const t = tmp();
+  // synthesise a profile whose role is not declared
+  const profDir = path.join(REPO_ROOT, 'controls', 'profiles');
+  const tmpProfile = path.join(profDir, 'zzz-test-undeclared.json');
+  fs.writeFileSync(tmpProfile, JSON.stringify({
+    profile_id: 'zzz-test-undeclared', description: 'test', entity_role: { kind: 'unknown', activity: 'unknown', declared: false },
+    jurisdictions: ['TR'], data_categories: ['pan'], payment_providers: [], stack: { languages: [], databases: [], detected: true }, assumptions: [], overlays: [],
+  }), 'utf8');
+  try {
+    const r = runCli(['explain', '--profile', 'zzz-test-undeclared', '--json']);
+    const j = JSON.parse(r.out);
+    assert.equal(j.role_declared, false, 'role not declared');
+    assert.ok(j.ambiguities.some((a) => /not inferred/i.test(a)), 'ambiguity: obligations are not inferred');
+    assert.ok(j.ambiguities.some((a) => /auto-detected/i.test(a)), 'ambiguity: detected stack flagged');
+  } finally { fs.rmSync(tmpProfile, { force: true }); fs.rmSync(t, { recursive: true, force: true }); }
+});
+
+test('E-dry-run: install --dry-run writes NOTHING', () => {
+  const t = tmp();
+  const r = runCli(['--tool', 'claude', '--target', t, '--home', t, '--dry-run', '--json']);
+  assert.equal(r.code, 0);
+  const j = JSON.parse(r.out);
+  assert.equal(j.dry_run, true);
+  assert.ok(j.changes.length === sourceSkillNames.length);
+  assert.ok(!fs.existsSync(path.join(t, '.claude')), 'dry-run created NO files');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('E-diff: diff reports create/update/unchanged and touches nothing', () => {
+  const t = tmp();
+  run(['--tool', 'claude', '--target', t, '--home', t]); // real install
+  const before = walkFiles(path.join(t, '.claude'));
+  const r = runCli(['diff', '--tool', 'claude', '--target', t, '--home', t, '--json']);
+  assert.equal(r.code, 0);
+  const j = JSON.parse(r.out);
+  assert.ok((j.summary.unchanged || 0) === sourceSkillNames.length, 'a fresh install diffs as all-unchanged');
+  const after = walkFiles(path.join(t, '.claude'));
+  assert.deepEqual(after, before, 'diff wrote nothing');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('E-uninstall: removes only unchanged managed; preserves user edits; --dry-run writes nothing', () => {
+  const t = tmp();
+  run(['--tool', 'claude', '--target', t, '--home', t]);
+  // user-edit one skill
+  const edited = path.join(t, '.claude', 'skills', 'go', 'SKILL.md');
+  fs.appendFileSync(edited, '\n<!-- user edit -->\n');
+  // dry-run first: nothing removed
+  const dry = runCli(['uninstall', '--tool', 'claude', '--target', t, '--home', t, '--dry-run']);
+  assert.equal(dry.code, 0);
+  assert.ok(fs.existsSync(edited), 'dry-run uninstall removed nothing');
+  // real uninstall: unchanged removed, the edited one preserved
+  const r = runCli(['uninstall', '--tool', 'claude', '--target', t, '--home', t]);
+  assert.equal(r.code, 0);
+  assert.ok(fs.existsSync(edited), 'user-edited skill PRESERVED');
+  assert.ok(!fs.existsSync(path.join(t, '.claude', 'skills', 'python', 'SKILL.md')), 'an unchanged managed skill was removed');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('E-uninstall codex: removes the managed AGENTS block but keeps user text', () => {
+  const t = tmp();
+  fs.writeFileSync(path.join(t, 'AGENTS.md'), '# My own notes\nkeep me\n', 'utf8');
+  run(['--tool', 'codex', '--target', t, '--home', t]);
+  const r = runCli(['uninstall', '--tool', 'codex', '--target', t, '--home', t]);
+  assert.equal(r.code, 0);
+  const agents = fs.readFileSync(path.join(t, 'AGENTS.md'), 'utf8');
+  assert.ok(agents.includes('# My own notes') && agents.includes('keep me'), 'user text preserved');
+  assert.ok(!agents.includes(api.BLOCK_START), 'managed block removed');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('E-strict: an unknown flag or command errors (exit 2) and never installs', () => {
+  const t = tmp();
+  const f = runCli(['--tool', 'claude', '--target', t, '--home', t, '--frobnicate']);
+  assert.equal(f.code, 2, 'unknown flag exits 2');
+  assert.ok(!fs.existsSync(path.join(t, '.claude')), 'unknown flag did NOT install');
+  const c = runCli(['frobnicate', '--tool', 'claude', '--target', t, '--home', t]);
+  assert.equal(c.code, 2, 'unknown command exits 2');
+  assert.ok(!fs.existsSync(path.join(t, '.claude')), 'unknown command did NOT install');
+  fs.rmSync(t, { recursive: true, force: true });
+});
+
+test('R03: installed skills carry PINNED source URLs for controls/examples references', () => {
+  // fintech-transfer references controls/profiles/ and examples/*-postgres-harness/
+  const s = api.listSkillFiles().find((x) => x.name === 'fintech-transfer');
+  const mc = api.managedContent(s);
+  assert.ok(/examples\/ts-postgres-harness\/\` \(\[pinned\]\(https:\/\/github\.com\/fintechbear\/fintech-compliance-skills\/blob\/v\d+\.\d+\.\d+\//.test(mc),
+    'an examples/ reference is pinned to an immutable source URL');
+  assert.ok(/controls\/profiles\/\` \(\[pinned\]\(https:\/\/github\.com\/fintechbear/.test(mc),
+    'a controls/ reference is pinned to a source URL');
+  // installing twice is byte-identical (the pinned rewrite is deterministic)
+  const mc2 = api.managedContent(s);
+  assert.equal(mc, mc2, 'resource-ref rewrite is idempotent');
 });

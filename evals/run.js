@@ -38,20 +38,35 @@ function loadTasks() {
 
 // Install the candidate (current working tree) or baseline (git archive of BASELINE_COMMIT)
 // skills into a sandbox in codex format (AGENTS.md + .fintech-compliance-skills/ tree).
-function installSkills(condition, sandbox) {
+// R05: the sandbox is the agent's CWD. Baseline materialisation (git archive + tar + the
+// baseline installer source) is done in `prepDir`, which lives OUTSIDE the sandbox so the
+// agent can never read the baseline source tree, the grader, answers, or other conditions.
+// Only the INSTALLED output (AGENTS.md + tree) ever lands in the sandbox.
+function installSkills(condition, sandbox, prepDir) {
   if (condition === 'WITHOUT_SKILLS') return;
   if (condition === 'CANDIDATE') {
     execFileSync(process.execPath, [INSTALLER, '--tool', 'codex', '--target', sandbox], { stdio: 'pipe' });
     return;
   }
-  // CURRENT_BASELINE: materialize the baseline skills/ from git, run that commit's installer.
-  const blRepo = path.join(sandbox, '_baseline_src');
+  // CURRENT_BASELINE: materialize the baseline skills/ from git into prepDir (NOT the sandbox),
+  // then run THAT commit's installer with --target the sandbox so only the install lands there.
+  const blRepo = path.join(prepDir, 'baseline_src');
   fs.mkdirSync(blRepo, { recursive: true });
-  // export the baseline tree (skills/ + installer/) without touching the working tree
-  execFileSync('git', ['-C', REPO, 'archive', BASELINE_COMMIT], { stdio: ['ignore', fs.openSync(path.join(sandbox, '_bl.tar'), 'w'), 'pipe'] });
-  execFileSync('tar', ['-xf', path.join(sandbox, '_bl.tar'), '-C', blRepo], { stdio: 'pipe' });
+  const tar = path.join(prepDir, 'bl.tar');
+  execFileSync('git', ['-C', REPO, 'archive', BASELINE_COMMIT], { stdio: ['ignore', fs.openSync(tar, 'w'), 'pipe'] });
+  execFileSync('tar', ['-xf', tar, '-C', blRepo], { stdio: 'pipe' });
   const blInstaller = path.join(blRepo, 'installer', 'index.js');
   execFileSync(process.execPath, [blInstaller, '--tool', 'codex', '--target', sandbox], { stdio: 'pipe' });
+}
+
+// Best-effort provenance for the run manifest. Missing values are null, never invented.
+function gitRev(ref) { try { return execFileSync('git', ['-C', REPO, 'rev-parse', ref], { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(); } catch { return null; } }
+function codexVersion() { try { return execFileSync(process.platform === 'win32' ? 'powershell.exe' : 'bash', process.platform === 'win32' ? ['-NoProfile', '-Command', 'codex --version'] : ['-lc', 'codex --version'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim(); } catch { return null; } }
+function treeHash(dir) {
+  // stable hash of the installed skill surface the agent saw (sorted rel path + content hash)
+  const crypto = require('crypto'); const h = crypto.createHash('sha256'); const files = [];
+  const walk = (d, rel) => { if (!fs.existsSync(d)) return; for (const e of fs.readdirSync(d, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) { const r = rel ? `${rel}/${e.name}` : e.name; const abs = path.join(d, e.name); if (e.isDirectory()) walk(abs, r); else files.push([r, crypto.createHash('sha256').update(fs.readFileSync(abs)).digest('hex').slice(0, 16)]); } };
+  walk(dir, ''); for (const [r, hh] of files) h.update(`${r}:${hh}\n`); return files.length ? h.digest('hex').slice(0, 16) : null;
 }
 
 (async () => {
@@ -63,40 +78,75 @@ function installSkills(condition, sandbox) {
   const conditions = condsArg ? condsArg.split(',').map((s) => s.trim()) : ALL_CONDITIONS;
   const selected = tasks.filter((t) => ids.includes(t.id));
 
-  // Isolated CODEX_HOME, proven clean before any paid call.
-  const codexHome = prepareCodexHome(RUN_DIR);
-  const leaks = assertNoGlobalLeak(codexHome);
-  if (leaks.length) { console.error('ABORT: global instruction leak into CODEX_HOME:', leaks.join(', ')); process.exit(3); }
-  console.log(`isolated CODEX_HOME ready (no global leak). baseline=${BASELINE_COMMIT.slice(0, 7)}  timeout=${TIMEOUT_MS}ms`);
+  // Provenance pinned ONCE for the whole run (same for every task/condition).
+  const candidateSha = gitRev('HEAD');
+  const baselineSha = gitRev(BASELINE_COMMIT) || BASELINE_COMMIT;
+  const cliVersion = codexVersion();
+  const startedRun = new Date().toISOString();
+
+  // Prove isolation ONCE up front against a representative home (fail fast before any paid
+  // call), then give EACH run its OWN fresh home so no state carries between conditions.
+  {
+    const probe = prepareCodexHome(path.join(RUN_DIR, 'home-probe'));
+    const leaks = assertNoGlobalLeak(probe.dest);
+    if (leaks.length) { console.error('ABORT: global instruction leak into CODEX_HOME:', leaks.join(', ')); process.exit(3); }
+  }
+  console.log(`isolated CODEX_HOME verified clean. baseline=${baselineSha.slice(0, 7)} candidate=${(candidateSha || '?').slice(0, 7)} cli=${cliVersion || 'unknown'} timeout=${TIMEOUT_MS}ms`);
 
   const results = [];
+  let runIdx = 0;
   for (const task of selected) {
     for (const condition of conditions) {
-      const sandbox = fs.mkdtempSync(path.join(RUN_DIR, `sb-${task.id}-${condition}-`));
+      runIdx++;
+      // Per-run roots: sandbox = agent CWD; prep (baseline source) and home are SEPARATE
+      // and never under the sandbox, so the agent cannot read them. Fresh home EACH run.
+      const runRoot = fs.mkdtempSync(path.join(RUN_DIR, `run-${runIdx}-${task.id}-${condition}-`));
+      const sandbox = path.join(runRoot, 'sandbox'); fs.mkdirSync(sandbox, { recursive: true });
+      const prepDir = path.join(runRoot, 'prep'); fs.mkdirSync(prepDir, { recursive: true });
+      const home = prepareCodexHome(runRoot); // fresh, isolated, per-run
+      const homeLeaks = assertNoGlobalLeak(home.dest);
+
       fs.writeFileSync(path.join(sandbox, 'prompt.txt'), task.prompt, 'utf8');
-      let setupErr = null;
-      try { installSkills(condition, sandbox); } catch (e) { setupErr = String(e.message || e); }
+      let setupErr = homeLeaks.length ? `CODEX_HOME leak: ${homeLeaks.join(', ')}` : null;
+      if (!setupErr) { try { installSkills(condition, sandbox, prepDir); } catch (e) { setupErr = String(e.message || e); } }
 
       let adapterState, gradeStatus, reason, elapsed = 0;
+      const surfaceHash = treeHash(path.join(sandbox, '.fintech-compliance-skills'));
       if (setupErr) { adapterState = 'SETUP_ERROR'; gradeStatus = 'NOT_RUN'; reason = setupErr; }
       else {
         const started = Date.now();
-        const r = await runCodex(path.join(sandbox, 'prompt.txt'), sandbox, TIMEOUT_MS, codexHome);
+        const r = await runCodex(path.join(sandbox, 'prompt.txt'), sandbox, TIMEOUT_MS, home.dest);
         elapsed = Date.now() - started;
         adapterState = r.state;
         fs.writeFileSync(path.join(sandbox, 'output.txt'), r.output || '', 'utf8');
         if (r.state !== 'OK') { gradeStatus = 'NOT_RUN'; reason = `adapter state ${r.state}`; }
         else { const g = grade(task, r.output); gradeStatus = g.status; reason = g.reason; }
       }
-      results.push({ id: task.id, category: task.category, critical: !!task.critical, condition, adapter_state: adapterState, grade: gradeStatus, reason, elapsed_ms: elapsed });
-      console.log(`${task.id} [${task.category}${task.critical ? '/CRIT' : ''}] ${condition} state=${adapterState} grade=${gradeStatus} (${elapsed}ms) :: ${reason}`);
+      results.push({
+        id: task.id, category: task.category, critical: !!task.critical, condition,
+        adapter_state: adapterState, grade: gradeStatus, reason, elapsed_ms: elapsed,
+        candidate_sha: candidateSha, baseline_sha: baselineSha,
+        installed_surface_hash: surfaceHash, // what skill surface the agent actually saw
+        cli_version: cliVersion,
+        token_usage: null, // not reported by this adapter path -> null, never invented
+        home_kept_config: home.kept,
+      });
+      console.log(`${task.id} [${task.category}${task.critical ? '/CRIT' : ''}] ${condition} state=${adapterState} grade=${gradeStatus} (${elapsed}ms) surface=${surfaceHash || 'none'} :: ${reason}`);
     }
   }
 
-  const summary = { baseline_commit: BASELINE_COMMIT, conditions, ids, ran: results.length, run_dir: RUN_DIR, results };
+  const manifest = {
+    schema: 'fcs-eval-run/1',
+    started_at: startedRun, finished_at: new Date().toISOString(),
+    candidate_sha: candidateSha, baseline_sha: baselineSha, baseline_commit: BASELINE_COMMIT,
+    cli_version: cliVersion, timeout_ms: TIMEOUT_MS,
+    conditions, ids, ran: results.length, run_dir: RUN_DIR,
+    token_usage_available: false, // this adapter path does not surface token counts
+    results,
+  };
   const outDir = path.join(__dirname, 'results');
   fs.mkdirSync(outDir, { recursive: true });
   const outFile = path.join(outDir, `scored-${Date.now()}.json`);
-  fs.writeFileSync(outFile, JSON.stringify(summary, null, 2));
+  fs.writeFileSync(outFile, JSON.stringify(manifest, null, 2));
   console.log('\nDONE -> ' + outFile + '  (raw outputs in ' + RUN_DIR + ')');
 })();

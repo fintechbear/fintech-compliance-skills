@@ -208,7 +208,7 @@ The engineering primitives are the same; what changes is **what you must record,
 
 - **EU — GDPR, PSD2 SCA, DORA.** GDPR: lawful basis, data-subject erasure (crypto-shredding via per-subject DEK makes this tractable), data-minimization in logs. **PSD2 Strong Customer Authentication**: two independent factors on login and on payment initiation — wire an MFA/step-up gate into the auth and transfer workflows above. **DORA**: ICT resilience, incident reporting timelines, and testing — your audit/append-only logging and retention must satisfy regulator inspection.
 - **US — SOX, GLBA, CCPA.** **SOX**: change control and audit integrity over financial-reporting systems — immutable audit trail and segregation of duties (maker-checker) matter here. **GLBA Safeguards Rule**: encryption of customer financial data at rest/in transit, access control. **CCPA/CPRA**: consumer deletion/opt-out — same crypto-shredding + data-inventory story as GDPR.
-- **Turkey — KVKK, BDDK, MASAK.** **KVKK** mirrors GDPR consent/erasure duties. **BDDK** imposes **data-localization**: banking customer/transaction data for Turkish operations must be stored and processed on infrastructure in Turkey — this changes your data residency and region config, not your code's crypto. **MASAK**: AML/suspicious-transaction reporting — the sanctions/AML screening step is mandatory and its decisions must be retained and reportable.
+- **Turkey — KVKK, BDDK, MASAK.** Scope first: these regimes follow the entity’s licensed role and activity, not the customer’s country — BDDK covers banks, TCMB covers payment and e-money institutions, MASAK duties fall on obliged parties. A Turkish user alone only triggers the KVKK analysis (a lawful basis, and a KVKK transfer mechanism for any cross-border transfer). The sector localization below applies only to an in-scope institution; see `regional/turkey-kvkk-bddk-masak.md`. **KVKK** mirrors GDPR consent/erasure duties. **BDDK** imposes **data-localization**: a BDDK-regulated bank’s customer/transaction data must be stored and processed on infrastructure in Turkey — this changes your data residency and region config, not your code's crypto. **MASAK**: AML/suspicious-transaction reporting — the sanctions/AML screening step is mandatory and its decisions must be retained and reportable.
 - **UK — FCA, UK GDPR.** **UK GDPR** tracks EU GDPR post-Brexit (watch for divergence). **FCA** rules on operational resilience, customer-data handling, and SCA (UK-RTS) broadly parallel PSD2 — keep the SCA/MFA gate.
 
 Encode jurisdiction as **configuration/policy** (residency region, retention windows, SCA on/off, which screening lists), not as forked business logic, so one audited code path serves all regions. Defer to the loaded regional skill for the authoritative control list.
@@ -256,23 +256,14 @@ public sealed class TransferController(AppDbContext db, ILogger<TransferControll
         // Payload fingerprint: same key + same payload is a safe replay; same key + different payload is a conflict.
         var fingerprint = Fingerprint(req);
 
-        // Idempotency key is scoped by (tenant, operation, key) — a DB unique constraint on that TRIPLE is the
-        // real guarantee (an in-memory check races). Two tenants reusing the same client key never collide.
-        var prior = await db.IdempotencyRecords.AsNoTracking().FirstOrDefaultAsync(
-            r => r.TenantId == tenantId && r.Operation == "transfers.create" && r.Key == idemKey, ct);
-        if (prior is not null)
-        {
-            if (prior.PayloadFingerprint != fingerprint)
-                return Conflict("Idempotency-Key reused with a different payload");  // explicit 409, not a silent replay
-            return Ok(JsonSerializer.Deserialize<object>(prior.StoredResponse));     // replay the stored result verbatim
-        }
-
         await using var tx = await db.Database.BeginTransactionAsync(
             System.Data.IsolationLevel.Serializable, ct);
         try
         {
-            // Object-level authorization + tenant scoping: load the accounts WITHIN this tenant, and prove the
-            // actor may act on the SOURCE account — endpoint policy alone does not say "this actor owns THIS account".
+            // Object-level authorization + tenant scoping FIRST — before ANY idempotency replay. Load the accounts
+            // WITHIN this tenant and prove the actor may debit the SOURCE account. Endpoint policy and tenant
+            // membership are not this authorization. If the replay lookup ran first, an actor in the same tenant
+            // with no debit grant could present an old key and read back the stored transfer id/result.
             var from = await db.Accounts.FirstOrDefaultAsync(
                 a => a.Id == req.FromAccountId && a.TenantId == tenantId, ct);
             var to   = await db.Accounts.FirstOrDefaultAsync(
@@ -281,6 +272,17 @@ public sealed class TransferController(AppDbContext db, ILogger<TransferControll
             if (!await db.AccountGrants.AnyAsync(
                     g => g.AccountId == from.Id && g.PrincipalId == actorId && g.CanDebit, ct))
                 return Forbid();   // actor is not authorized over THIS source account (object, not just endpoint)
+
+            // Idempotency replay only AFTER authorization. The key is scoped by (tenant, operation, key) — a DB
+            // unique constraint on that TRIPLE is the real guarantee (an in-memory check races).
+            var prior = await db.IdempotencyRecords.AsNoTracking().FirstOrDefaultAsync(
+                r => r.TenantId == tenantId && r.Operation == "transfers.create" && r.Key == idemKey, ct);
+            if (prior is not null)
+            {
+                if (prior.PayloadFingerprint != fingerprint)
+                    return Conflict("Idempotency-Key reused with a different payload");  // explicit 409, not a silent replay
+                return Ok(JsonSerializer.Deserialize<object>(prior.StoredResponse));     // replay, actor already authorized
+            }
 
             // Currency must match the request AND both accounts; convert with the ISO 4217-aware converter.
             if (from.Currency != req.Currency || to.Currency != req.Currency)
@@ -318,6 +320,9 @@ public sealed class TransferController(AppDbContext db, ILogger<TransferControll
         {
             // Lost the response-write race: a concurrent identical request already committed under this key.
             // The unique index on (tenant, operation, key) is the real dedup — re-read and return the stored result.
+            // Authorization still holds here: this catch is only reachable from SaveChangesAsync, which runs after
+            // the debit-grant check above. Returning the winner is gated on the SAME fingerprint, and the
+            // fingerprint covers FromAccountId, so the winner is a transfer from the account this actor may debit.
             await tx.RollbackAsync(ct);
             var winner = await db.IdempotencyRecords.AsNoTracking().FirstAsync(
                 r => r.TenantId == tenantId && r.Operation == "transfers.create" && r.Key == idemKey, ct);

@@ -1,83 +1,126 @@
 name: Publish to npm
 
-# Publishes the package when you push a version tag (e.g. v1.0.0), or on manual dispatch.
+# Release path. A run either PUBLISHES an approved release or stays PACK-ONLY.
 #
-# Auth (both supported): OIDC Trusted Publishing (no secrets; requires the package to
-# exist once on npm AND a Trusted Publisher configured for this repo+workflow on
-# npmjs.com), or an NPM_TOKEN repo secret. If NPM_TOKEN is set it is used; else OIDC.
+#   * Tag push (refs/tags/vX.Y.Z): publishes only if .github/scripts/release-guard.js agrees —
+#     tag == "v"+package.json version, the tagged commit is already on main, the version is not
+#     yet on the registry, and the stamped source identity equals the built commit.
+#   * Manual dispatch: PACK-ONLY by default. Publishing by dispatch needs mode=publish, must be
+#     run on the release tag ref, and must name the exact approved commit in expected_sha. The
+#     same guard applies, so a tag push and a dispatch cannot publish the same version twice.
 #
-# OIDC runtime: npm's trusted-publishing path needs a recent npm (OIDC + provenance).
-# We run Node 24, which ships an npm new enough for OIDC, and LOG + ASSERT the actual
-# versions at run time rather than trusting a hard-coded claim. The exact minimum
-# (reported as Node >=22.14.0 / npm >=11.5.1) was NOT confirmed from a primary source in
-# this cycle — see docs/development/P01.md (NEEDS_REVIEW). Node 24 clears any of those.
+# The full non-CLI Verify gate (reusable workflow) must pass on the same ref first. The package
+# is packed ONCE; its SHA-256 and file inventory are retained; that same tarball is published.
+# CLI tests are NOT RUN for this release by explicit scope decision.
 #
-# The quality gate runs BEFORE publish on the SAME checkout; the published artifact is
-# the one that passed. NOTE: configuring the Trusted Publisher on the npm account is a
-# manual, out-of-band step that was NOT performed/tested here (BLOCKED).
+# Auth: OIDC Trusted Publishing (npm >= 11.5.1, Node >= 22.14.0 per npm docs; Node 24 used) or an
+# NPM_TOKEN secret. Configuring the npm package / Trusted Publisher is an account-side step that
+# this workflow cannot prove; `npm pack` does not prove publish rights.
 
 on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'pack-only (default) or publish'
+        type: choice
+        options: [pack-only, publish]
+        default: pack-only
+      expected_sha:
+        description: 'Required for mode=publish: the full approved commit SHA being released'
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  # Every required non-CLI job (module matrix, real-PG .NET + TS harnesses, catalog, eval
+  # self-tests, negative-gate proof) must pass on THIS ref before anything is packed/published.
+  gate:
+    uses: ./.github/workflows/verify.yml
+
   publish:
+    needs: gate
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write   # required for OIDC trusted publishing + provenance
+      id-token: write   # OIDC trusted publishing + provenance
     steps:
-      - name: Checkout
+      - name: Checkout (full history for the main-ancestry check)
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '24'          # ships npm new enough for OIDC + provenance
+          node-version: '24'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Log + assert OIDC-capable runtime
         shell: bash
         run: |
           echo "node: $(node --version)   npm: $(npm --version)"
-          # fail early if npm is too old for OIDC trusted publishing
           node -e 'const s=require("child_process").execSync("npm --version").toString().trim();const [a,b,c]=s.split(".").map(Number);const ok=(a>11)||(a===11&&(b>5||(b===5&&c>=1)));if(!ok){console.error("npm "+s+" < 11.5.1 (OIDC requirement)");process.exit(1)}console.log("npm "+s+" satisfies >=11.5.1")'
 
-      - name: Verify package version matches the tag
-        if: startsWith(github.ref, 'refs/tags/v')
-        shell: bash
-        run: |
-          PKG_VERSION="v$(node -p "require('./package.json').version")"
-          TAG="${GITHUB_REF_NAME}"
-          echo "package.json: $PKG_VERSION   tag: $TAG"
-          if [ "$PKG_VERSION" != "$TAG" ]; then
-            echo "::error::package.json version ($PKG_VERSION) does not match the tag ($TAG). Bump package.json and re-tag."
-            exit 1
-          fi
-
-      - name: Install dev dependencies (npm ci)
+      - name: Install dev dependencies (npm ci; prepare stamps the source identity)
         run: npm ci
 
-      - name: Quality gate — must pass before publish (same checkout that is published)
-        run: |
-          npm run verify
-          npm test
-
-      - name: Pack once and verify the artifact installs from the tarball
+      - name: Pack once and record artifact inventory (CLI tests explicitly NOT RUN)
         shell: bash
         run: |
           TGZ=$(npm pack --silent | tail -1)
-          echo "artifact: $TGZ"
-          sha256sum "$TGZ"
-          mkdir -p /tmp/verify && tar -xzf "$TGZ" -C /tmp/verify
-          node /tmp/verify/package/installer/index.js --tool claude --target /tmp/pkgtest --home /tmp/pkgtest >/dev/null
-          echo "packaged install OK ($(ls /tmp/pkgtest/.claude/skills | wc -l) skills)"
+          sha256sum "$TGZ" | tee artifact.sha256
+          tar -tzf "$TGZ" > artifact-files.txt
           echo "FCS_TGZ=$TGZ" >> "$GITHUB_ENV"
+          echo "CLI tests were not run for this release by explicit scope decision. Installer/doctor command flows and live Claude Code/Codex/Kiro sessions remain unverified." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain the exact artifact and checksum
+        uses: actions/upload-artifact@v4
+        with:
+          name: publication-artifact
+          path: |
+            *.tgz
+            artifact.sha256
+            artifact-files.txt
+
+      - name: Release guard (publish vs pack-only)
+        id: guard
+        shell: bash
+        env:
+          FCS_EVENT: ${{ github.event_name }}
+          FCS_REF: ${{ github.ref }}
+          FCS_SHA: ${{ github.sha }}
+          FCS_MODE: ${{ github.event_name == 'push' && 'publish' || inputs.mode }}
+          FCS_EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: |
+          set -euo pipefail
+          export FCS_PKG_VERSION="$(node -p "require('./package.json').version")"
+          NAME="$(node -p "require('./package.json').name")"
+          git fetch --no-tags origin main:refs/remotes/origin/main
+          if git merge-base --is-ancestor "$FCS_SHA" origin/main; then export FCS_ON_MAIN=true; else export FCS_ON_MAIN=false; fi
+          # registry check: E404 = not published; any other failure = cannot decide -> refuse
+          set +e; OUT="$(npm view "$NAME@$FCS_PKG_VERSION" version 2>&1)"; RC=$?; set -e
+          if [ $RC -eq 0 ] && [ "$OUT" = "$FCS_PKG_VERSION" ]; then export FCS_ALREADY_PUBLISHED=true
+          elif echo "$OUT" | grep -q E404; then export FCS_ALREADY_PUBLISHED=false
+          else echo "::error::registry state unknown: $OUT"; export FCS_ALREADY_PUBLISHED=true; fi
+          export FCS_STAMPED_COMMIT="$(node -p "(()=>{try{return require('./installer/source.generated.json').commit||''}catch{return ''}})()")"
+          node .github/scripts/release-guard.js
 
       - name: Publish (the same packed artifact)
+        if: steps.guard.outputs.publish == 'true'
         run: npm publish "$FCS_TGZ" --access public --provenance
         env:
-          # Present only if you added the NPM_TOKEN secret; empty string => OIDC path.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Pack-only summary
+        if: steps.guard.outputs.publish != 'true'
+        run: |
+          echo "Pack-only run - artifact built and retained, nothing was published." >> "$GITHUB_STEP_SUMMARY"

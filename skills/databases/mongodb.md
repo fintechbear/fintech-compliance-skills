@@ -1,3 +1,9 @@
+---
+name: "mongodb"
+description: "Configure and query MongoDB safely for regulated fintech: field-level and at-rest encryption, least-privilege roles, auditing, PII masking and retention at the storage layer. Load when the datastore is MongoDB (self-managed or Atlas) and holds PII, card data, ledgers or KYC records."
+triggers: "mongodb, mongo, atlas, mongoose, collection, document database, csfle, queryable encryption"
+---
+
 # Skill: MongoDB for Regulated Fintech
 
 **Purpose.** Make an AI coding agent configure and use MongoDB safely in a regulated
@@ -476,9 +482,9 @@ matching regional skill for specifics.
   safeguard customer financial info (encryption at rest + in transit + RBAC).
   CCPA/CPRA: consumer access/deletion rights — track where PII lives (encrypted fields,
   TTL for minimization).
-- **Turkey — KVKK, BDDK, MASAK.** KVKK: consent, data-subject rights, VERBİS
+- **Turkey — KVKK, BDDK, MASAK.** Scope first: these regimes follow the entity’s licensed role and activity, not the customer’s country — BDDK covers banks, TCMB covers payment and e-money institutions, MASAK duties fall on obliged parties. A Turkish user alone only triggers the KVKK analysis (a lawful basis, and a KVKK transfer mechanism for any cross-border transfer). The sector localization below applies only to an in-scope institution; see `regional/turkey-kvkk-bddk-masak.md`. KVKK: consent, data-subject rights, VERBİS
   registration where applicable. **BDDK** banking rules commonly require **data
-  localization** — keep customer/financial data on infrastructure **in Turkey**; for
+  localization** — for an in-scope bank, keep its primary and secondary systems on infrastructure **in Turkey**; for
   Atlas, pin the cluster to a Turkish/approved region and do **not** default to an
   offshore region. **MASAK**: AML/suspicious-transaction reporting and record retention.
 - **UK — FCA, UK GDPR.** FCA operational-resilience and consumer-duty expectations; UK
