@@ -215,9 +215,23 @@ jobs:
         run: |
           set -e
           work="$RUNNER_TEMP/negf04exc"; cp -r . "$work"; cd "$work"
-          node -e 'const f="evals/grader.js";let s=require("fs").readFileSync(f,"utf8");const o="function exceptionSentences(text) {";if(!s.includes(o))process.exit(3);s=s.replace(o,o+" return [];");require("fs").writeFileSync(f,s)'
-          if node evals/grader.js; then echo "::error::grader self-test PASSED with the exception check disabled"; exit 1; fi
-          echo "ok: disabled exception check was caught"
+          node -e 'const f="evals/grader.js";let s=require("fs").readFileSync(f,"utf8");const o="const EXCEPTION_RE = /";if(!s.includes(o))process.exit(3);s=s.replace(o,o+"(?!)");require("fs").writeFileSync(f,s)'
+          if node evals/grader.js; then echo "::error::grader self-test PASSED with the exception marker disabled"; exit 1; fi
+          echo "ok: disabled exception marker was caught"
+      - name: Re-opening AUD-20261102-F04 round 7 (safe phrase launders its sentence) MUST fail the grader self-test
+        run: |
+          set -e
+          work="$RUNNER_TEMP/negf04r7a"; cp -r . "$work"; cd "$work"
+          node -e 'const f="evals/grader.js";let s=require("fs").readFileSync(f,"utf8");const o="function subClauseAccounted(s) {";if(!s.includes(o))process.exit(3);s=s.replace(o,o+" return true;");require("fs").writeFileSync(f,s)'
+          if node evals/grader.js; then echo "::error::grader self-test PASSED with every sub-clause treated as accounted"; exit 1; fi
+          echo "ok: sub-clause whitelist bypass was caught"
+      - name: Re-opening AUD-20261102-F04 round 7 (safe phrase anywhere in a clause binds it) MUST fail the grader self-test
+        run: |
+          set -e
+          work="$RUNNER_TEMP/negf04r7b"; cp -r . "$work"; cd "$work"
+          node -e 'const f="evals/grader.js";let s=require("fs").readFileSync(f,"utf8");const o="function safeMatchBound(core) {";if(!s.includes(o))process.exit(3);s=s.replace(o,o+" return SAFE_ALTERNATIVE_RE.test(core);");require("fs").writeFileSync(f,s)'
+          if node evals/grader.js; then echo "::error::grader self-test PASSED with unbound safe phrases"; exit 1; fi
+          echo "ok: unbound safe phrase was caught"
       - name: Re-opening AUD-20261102-F01 round 3 (omitted field = declared empty) MUST fail the selector self-test
         run: |
           set -e
