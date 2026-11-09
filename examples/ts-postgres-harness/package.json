@@ -22,7 +22,7 @@
   "devDependencies": {
     "tsx": "4.20.0",
     "typescript": "5.7.2",
-    "@types/node": "22.10.2",
+    "@types/node": "26.6.6",
     "@types/pg": "8.11.10"
   }
 }
